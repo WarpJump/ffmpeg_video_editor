@@ -181,7 +181,7 @@ async def handle_processing(websocket, params):
         output_name = f"{params.get('intro_resolution', '2k')}_{base_name}_final_edit.mkv"
         output_path = os.path.join(os.path.dirname(params['video1']), output_name)
 
-        final_cmd = ['ffmpeg','-hide_banner','-loglevel','error','-stats','-f','concat','-safe','0','-i', concat_path] + ffmpeg_audio_inputs + ['-filter_complex', filter_complex, '-map','0:v','-map','[fa]', '-c:v','copy','-r','60', '-c:a', FINAL_AUDIO_CODEC, output_path,'-y']
+        final_cmd = ['ffmpeg','-hide_banner','-loglevel','error',  '-stats','-f','concat','-safe','0','-i', concat_path] + ffmpeg_audio_inputs + ['-filter_complex', filter_complex, '-map','0:v','-map','[fa]', '-c:v','copy','-r','60', '-c:a', FINAL_AUDIO_CODEC, '-movflags', '+faststart', output_path,'-y']
         
         await run_async_command(websocket, final_cmd, "Запускаем финальную сборку")
         await send_log(websocket, f"\nУСПЕХ! Финальный файл сохранен: {output_path}")
