@@ -16,6 +16,7 @@
         #current-path { flex-grow: 1; padding: 5px; background: #21222c; color: #f8f8f2; border: 1px solid #44475a; }
         #up-btn { background: #6272a4; color: #f8f8f2; border: none; padding: 5px 10px; margin-left: 5px; cursor: pointer; }
         #up-btn:hover { background: #bd93f9; }
+        .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; }
     </style>
 </head>
 <body>
@@ -23,27 +24,34 @@
      <div class="container">
         <div class="form-column">
             <fieldset><legend>1. Настройки</legend>
+                <!-- === ВОССТАНОВЛЕННЫЙ БЛОК === -->
                 <label>Режим Работы:</label>
                 <div>
-                    <input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()"> 
+                    <input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()">
                     <label for="singleFile" title="Обработать два сегмента из одного и того же видео/аудио файла.">Один файл</label>
-                    <input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()"> 
+                    <input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()">
                     <label for="twoFiles" title="Обработать два сегмента из двух разных видео/аудио файлов.">Два файла</label>
                 </div>
                 <div id="single_segment_toggle_div" style="margin-top:10px;">
-                    <input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()"> 
+                    <input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()">
                     <label for="is_single_segment" title="Вырезать один непрерывный кусок из видео, добавив интро и плавные переходы в начале и конце.">Обработать как единый ролик</label>
                 </div>
                 <div style="margin-top:15px;">
-                    <input type="checkbox" id="use_ram" checked> 
+                    <input type="checkbox" id="use_ram" checked>
                     <label for="use_ram" title="Временные файлы будут созданы в /dev/shm (ОЗУ). Работает только на Linux. Ускоряет процесс, если достаточно ОЗУ.">Использовать RAM-диск</label>
                 </div>
+                 <!-- === КОНЕЦ ВОССТАНОВЛЕННОГО БЛОКА === -->
                 <div style="margin-top:15px;">
                     <label>Разрешение интро:</label>
                     <div>
                       <input type="radio" id="intro_fullhd" name="intro_resolution" value="fullhd"> <label for="intro_fullhd">FullHD (1080p)</label>
                       <input type="radio" id="intro_2k" name="intro_resolution" value="2k" checked> <label for="intro_2k">2K (1440p)</label>
                     </div>
+                </div>
+                <div style="margin-top:15px;">
+                    <label>Выходная директория (опция):</label>
+                    <button type="button" onclick="selectDirectory('output_dir')">Выбрать папку...</button>
+                    <div id="output_dir_path" class="file-path-display">(По умолчанию: папка с "Видео 1")</div>
                 </div>
             </fieldset>
             <fieldset><legend>2. Файлы</legend>
@@ -74,13 +82,16 @@
                 <button id="up-btn" title="Вверх">↑</button>
             </div>
             <div id="file-list">(пусто)</div>
-            <button id="close-btn">Закрыть</button>
+            <div class="modal-buttons">
+                <button id="select-dir-btn" class="hidden">Выбрать текущую папку</button>
+                <button id="close-btn">Закрыть</button>
+            </div>
         </div>
     </div>
     <script>
-        const SERVER_PORT = "%%SERVER_PORT%%"; // Этот порт заменит Python скрипт при запуске
+        const SERVER_PORT = "%%SERVER_PORT%%";
         const logOutput = document.getElementById('log-output');
-        let filePaths = { video1: '', video2: '', audio1: '', audio2: '', intro_file: '' };
+        let filePaths = { video1: '', video2: '', audio1: '', audio2: '', intro_file: '', output_dir: '' };
         let ws;
         let currentId = '';
 
@@ -95,8 +106,7 @@
         }
 
         function jumpToTime(id) {
-            const input = document.getElementById(id);
-            const time = hmsToSeconds(input.value);
+            const time = hmsToSeconds(document.getElementById(id).value);
             const video = document.getElementById('videoPreview');
             if (!isNaN(time) && video.duration) {
                 video.currentTime = time;
@@ -105,80 +115,78 @@
         }
 
         function connect() {
-            ws = new WebSocket(`ws://127.0.0.1:${SERVER_PORT}`);
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${wsProtocol}//${window.location.hostname}:${SERVER_PORT}`);
             ws.onopen = () => { logOutput.textContent = 'Соединение установлено. Готов к работе.\n'; };
             ws.onerror = () => { logOutput.textContent = 'Ошибка соединения WebSocket. Повторная попытка через 2 секунды...\n'; };
             ws.onclose = () => { setTimeout(connect, 2000); };
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.action === 'browse_result') {
-                    renderBrowser(data);
-                } else if (data.action === 'path_resolved') {
-                    if (data.full_path) {
-                        filePaths[currentId] = data.full_path;
-                        document.getElementById(currentId + '_path').textContent = data.full_path;
-                        if (currentId === 'video1' || currentId === 'video2') {
-                            document.getElementById('videoPreview').src = 'file://' + data.full_path;
+                switch (data.action) {
+                    case 'browse_result':
+                        renderBrowser(data);
+                        break;
+                    case 'path_resolved':
+                        if (data.full_path) {
+                            filePaths[currentId] = data.full_path;
+                            document.getElementById(currentId + '_path').textContent = data.full_path;
+                            if ((currentId === 'video1' || currentId === 'video2') && data.relative_path) {
+                                document.getElementById('videoPreview').src = `/video?path=${encodeURIComponent(data.relative_path)}`;
+                            }
                         }
-                    }
-                    document.getElementById('file-modal').classList.add('hidden');
-                } else if (data.action === 'log') {
-                    if (data.message.startsWith('frame=')) {
-                        const lines = logOutput.textContent.split('\n');
-                        if (lines.length > 1 && lines[lines.length - 2].startsWith('frame=')) {
-                            lines[lines.length - 2] = data.message;
-                            logOutput.textContent = lines.join('\n');
-                        } else {
-                            logOutput.textContent += data.message + '\n';
-                        }
-                    } else {
+                        document.getElementById('file-modal').classList.add('hidden');
+                        break;
+                    case 'log':
                         logOutput.textContent += data.message + '\n';
-                    }
-                    logOutput.scrollTop = logOutput.scrollHeight;
-                } else if (data.action === 'finished') {
-                    document.getElementById('submitBtn').disabled = false;
-                    document.getElementById('submitBtn').textContent = 'Начать Обработку';
-                } else if (data.action === 'error') {
-                    alert(data.message);
+                        logOutput.scrollTop = logOutput.scrollHeight;
+                        break;
+                    case 'finished':
+                        document.getElementById('submitBtn').disabled = false;
+                        document.getElementById('submitBtn').textContent = 'Начать Обработку';
+                        break;
+                    case 'error':
+                        alert(data.message);
+                        break;
                 }
             };
         }
         
         function sendMessage(action, path) {
-            ws.send(JSON.stringify({ action, path }));
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action, path }));
+            } else {
+                logOutput.textContent += '\nОшибка: нет соединения.\n';
+            }
         }
 
         function renderBrowser({ path, entries }) {
             const fileList = document.getElementById('file-list');
-            const pathInput = document.getElementById('current-path');
-            pathInput.value = path;
-            
-            let html = '';
-            // Кнопка "Наверх" уже есть отдельно, так что не добавляем ".."
-            html += entries.map(e => {
+            document.getElementById('current-path').value = path;
+            const html = entries.map(e => {
                 const fullPath = (path === '/' ? '' : path) + '/' + e.name;
                 return `<div class="file-entry ${e.type}" data-path="${fullPath}">${e.name}</div>`;
             }).join('');
-            
             fileList.innerHTML = html || '(пусто)';
         }
 
-        function goUp() {
-            const pathInput = document.getElementById('current-path');
-            let currentPath = pathInput.value;
-            if (currentPath !== '/') {
-                const parentPath = currentPath.substring(0, currentPath.lastIndexOf('/')) || '/';
-                sendMessage('browse_path', parentPath);
-            }
-        }
-
-        function selectFile(id) {
+        function openModal(id) {
             if (!ws || ws.readyState !== WebSocket.OPEN) { logOutput.textContent += '\nОшибка: нет соединения.\n'; return; }
             currentId = id;
             document.getElementById('file-modal').classList.remove('hidden');
             sendMessage('browse_path', '/');
         }
+
+        function selectFile(id) {
+            document.getElementById('select-dir-btn').classList.add('hidden');
+            openModal(id);
+        }
+
+        function selectDirectory(id) {
+            document.getElementById('select-dir-btn').classList.remove('hidden');
+            openModal(id);
+        }
         
+        // === ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ===
         function toggleMode() {
             const isSingleFileMode = document.getElementById('singleFile').checked;
             const isSingleSegmentMode = document.getElementById('is_single_segment').checked;
@@ -215,17 +223,31 @@
             connect();
             toggleMode();
             document.getElementById('close-btn').onclick = () => document.getElementById('file-modal').classList.add('hidden');
-            document.getElementById('up-btn').onclick = goUp;
-            document.getElementById('current-path').onkeydown = (e) => {
-                if (e.key === 'Enter') {
-                    sendMessage('browse_path', e.target.value);
-                }
+            document.getElementById('up-btn').onclick = () => {
+                 const currentPath = document.getElementById('current-path').value;
+                 if (currentPath !== '/') {
+                    const parentPath = currentPath.substring(0, currentPath.lastIndexOf('/')) || '/';
+                    sendMessage('browse_path', parentPath);
+                 }
             };
+            document.getElementById('select-dir-btn').onclick = () => {
+                const path = document.getElementById('current-path').value;
+                sendMessage('resolve_path', path);
+            };
+            document.getElementById('current-path').onkeydown = (e) => { if (e.key === 'Enter') sendMessage('browse_path', e.target.value); };
+            
             document.getElementById('file-list').onclick = (e) => {
-                if (!e.target.classList.contains('file-entry')) return;
-                const path = e.target.dataset.path;
-                const isDir = e.target.classList.contains('dir');
-                sendMessage(isDir ? 'browse_path' : 'resolve_path', path);
+                const target = e.target.closest('.file-entry');
+                if (!target) return;
+                const path = target.dataset.path;
+                const isDir = target.classList.contains('dir');
+                if (isDir) {
+                    sendMessage('browse_path', path);
+                } else if (!document.getElementById('select-dir-btn').classList.contains('hidden')) {
+                    return;
+                } else {
+                    sendMessage('resolve_path', path);
+                }
             };
         };
     </script>

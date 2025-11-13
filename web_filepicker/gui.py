@@ -7,7 +7,7 @@ import webbrowser
 import websockets
 from websockets.server import serve
 from urllib.parse import urlparse, parse_qs
-
+import re
 # ==============================================================================
 # ---                        ГЛАВНЫЕ НАСТРОЙКИ                                ---
 # ==============================================================================
@@ -179,7 +179,13 @@ async def handle_processing(websocket, params):
         
         base_name, _ = os.path.splitext(os.path.basename(segments[0]['video_orig']))
         output_name = f"{params.get('intro_resolution', '2k')}_{base_name}_final_edit.mkv"
-        output_path = os.path.join(os.path.dirname(params['video1']), output_name)
+
+        # Используем выбранную директорию, если она есть, иначе - директорию из video1
+        output_dir = params.get('output_dir') or os.path.dirname(params['video1'])
+        if not os.path.isdir(output_dir):
+            raise ValueError(f"Выходная директория не существует: {output_dir}")
+
+        output_path = os.path.join(output_dir, output_name)
 
         final_cmd = ['ffmpeg','-hide_banner','-loglevel','error',  '-stats','-f','concat','-safe','0','-i', concat_path] + ffmpeg_audio_inputs + ['-filter_complex', filter_complex, '-map','0:v','-map','[fa]', '-c:v','copy','-r','60', '-c:a', FINAL_AUDIO_CODEC, '-movflags', '+faststart', output_path,'-y']
         
@@ -196,31 +202,80 @@ async def handle_processing(websocket, params):
                 try: os.remove(f); await send_log(websocket, f"Удалено: {f}")
                 except OSError as e: await send_log(websocket, f"Не удалось удалить {f}: {e}")
         await websocket.send(json.dumps({"action": "finished"}))
-
 # ==============================================================================
 # ---                        СЕРВЕРНАЯ ЧАСТЬ                                 ---
 # ==============================================================================
 
+async def handle_video_request(path, request_headers):
+    """Обрабатывает HTTP запросы на видеофайлы с поддержкой Range-запросов."""
+    
+    # 1. Безопасность: извлекаем путь к файлу из query-параметра ?path=...
+    parsed_path = urlparse(path)
+    query_params = parse_qs(parsed_path.query)
+    file_rel_path = query_params.get('path', [None])[0]
+
+    if not file_rel_path:
+        return (http.HTTPStatus.BAD_REQUEST, [], b"Missing 'path' parameter")
+
+    # 2. Проверяем, что путь находится внутри разрешенной директории
+    abs_path = await secure_path(file_rel_path)
+    if not abs_path or not os.path.isfile(abs_path):
+        return (http.HTTPStatus.NOT_FOUND, [], b"File not found or access denied")
+
+    file_size = os.path.getsize(abs_path)
+    range_header = request_headers.get('Range')
+    
+    headers = {
+        "Content-Type": "video/mp4", # Можно использовать и video/webm, mkv и т.д.
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_size),
+    }
+
+    if range_header:
+        # 3. Парсим Range-заголовок, чтобы отдать только часть файла
+        range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+        if not range_match:
+            return (http.HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, headers, b"Invalid Range header")
+        
+        start_byte = int(range_match.group(1))
+        end_byte_str = range_match.group(2)
+        end_byte = int(end_byte_str) if end_byte_str else file_size - 1
+        
+        if start_byte >= file_size or end_byte >= file_size:
+            return (http.HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, headers, b"Range out of bounds")
+
+        length = end_byte - start_byte + 1
+        headers["Content-Length"] = str(length)
+        headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{file_size}"
+
+        with open(abs_path, 'rb') as f:
+            f.seek(start_byte)
+            data = f.read(length)
+        
+        return (http.HTTPStatus.PARTIAL_CONTENT, headers, data)
+    else:
+        # 4. Если Range не указан, можно отдать файл целиком (но браузер обычно сам запросит с Range)
+        # Для простоты вернем OK, браузер сам сделает следующий запрос с Range
+        return (http.HTTPStatus.OK, headers, b"")
+
+
 async def websocket_handler(websocket):
     """Обрабатывает сообщения от клиента WebSocket."""
+    # ... (код этой функции остается без изменений)
     print("Клиент WebSocket подключен.")
     try:
         async for message in websocket:
             data = json.loads(message)
             action = data.get("action")
             if action in ["browse_path", "resolve_path"]:
-                # Логика файлового браузера
                 req_path = data.get("path", "/")
                 print(f"Получено: {action} для '{req_path}'")
-                
                 abs_path = await secure_path(req_path)
                 if not abs_path:
                     await websocket.send(json.dumps({"action": "error", "message": "Доступ запрещен"}))
                     continue
-
                 if action == "browse_path":
                     try:
-                        # Используем list comprehension для краткости
                         entries = [
                             {"name": e.name, "type": "dir" if e.is_dir() else "file"}
                             for e in os.scandir(abs_path) if not e.name.startswith('.')
@@ -231,23 +286,31 @@ async def websocket_handler(websocket):
                         await websocket.send(json.dumps({"action": "browse_result", "path": display_path, "entries": entries}))
                     except Exception as e:
                         print(f"Ошибка чтения '{abs_path}': {e}")
-                
                 elif action == "resolve_path":
-                    await websocket.send(json.dumps({"action": "path_resolved", "full_path": abs_path}))
+                    # ВАЖНО: Отправляем относительный путь для безопасности
+                    rel_path = os.path.relpath(abs_path, BROWSE_ROOT).replace('\\', '/')
+                    await websocket.send(json.dumps({"action": "path_resolved", "full_path": abs_path, "relative_path": rel_path}))
 
             elif action == "process":
                 asyncio.create_task(handle_processing(websocket, data.get("params", {})))
     except websockets.exceptions.ConnectionClosed:
         print("Клиент отключился.")
 
+
 async def http_server_handler(path, request_headers):
-    """Обрабатывает HTTP-запросы, отдавая файлы интерфейса."""
+    """Обрабатывает HTTP-запросы, отдавая файлы интерфейса или видео."""
     if "Upgrade" in request_headers and request_headers["Upgrade"].lower() == "websocket":
         return None 
     
     script_dir = os.path.dirname(os.path.realpath(__file__))
     
-    if path == '/' or path == '/index.html':
+    # НОВЫЙ МАРШРУТИЗАТОР
+    if path.startswith('/video'):
+        # Если запрос начинается с /video, передаем его новому обработчику
+        # Также нам понадобится модуль re для парсинга Range
+        import re 
+        return await handle_video_request(path, request_headers)
+    elif path == '/' or path == '/index.html':
         file_path = os.path.join(script_dir, "index.html")
         content_type = "text/html; charset=utf-8"
     elif path == '/style.css':
@@ -260,12 +323,13 @@ async def http_server_handler(path, request_headers):
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        if path == '/' or path == '/index.html': # Вставляем порт в HTML для JS
+        if path == '/' or path == '/index.html':
             content = content.replace("%%SERVER_PORT%%", str(SERVER_PORT))
             
         return (http.HTTPStatus.OK, {"Content-Type": content_type}, content.encode())
     except FileNotFoundError:
         return (http.HTTPStatus.NOT_FOUND, [], f"File not found: {os.path.basename(file_path)}".encode())
+
 
 async def main():
     """Главная функция запуска сервера."""
