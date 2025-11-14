@@ -134,3 +134,54 @@ fieldset {
     margin-top: 5px; 
     margin-bottom: 10px; 
 }
+
+.virtual-player-container {
+    background: var(--log-bg);
+    padding: 10px;
+    border: 1px solid var(--panel-bg);
+    border-bottom: none;
+    display: none; /* Изначально скрыт */
+}
+
+.virtual-player-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+#v-play-btn {
+    background: var(--accent-purple);
+    width: 40px;
+    height: 40px;
+    font-size: 1.5em;
+    padding: 0;
+    flex-shrink: 0;
+    margin: 0;
+}
+
+#v-time-display {
+    font-family: monospace;
+    font-size: 1.1em;
+    color: var(--accent-green);
+    min-width: 180px;
+}
+
+#v-progress-bar {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 8px;
+    background: var(--panel-bg);
+    outline: none;
+    cursor: pointer;
+}
+
+#v-progress-bar::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    background: var(--accent-green);
+    border-radius: 50%;
+    cursor: pointer;
+}

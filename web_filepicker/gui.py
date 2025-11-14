@@ -17,9 +17,9 @@ INTRO_BASE_NAME = "intro_new_sponsored"
 VIDEO_ENCODER = "libx264"
 FINAL_AUDIO_CODEC = "pcm_s16le"
 SERVER_PORT = 8765
-
+FORCE_HTTP_STREAMING = False
 # --- НАСТРОЙКИ ДЛЯ ФАЙЛОВОГО БРАУЗЕРА ---
-BROWSE_ROOT = os.path.realpath(os.path.expanduser("~/Videos"))
+BROWSE_ROOT = os.path.realpath(os.path.expanduser("~"))
 
 # ==============================================================================
 # ---                      ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ                           ---
@@ -83,6 +83,25 @@ async def run_async_command(websocket, command, title=""):
     if process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, " ".join(map(str, command)))
 
+async def get_video_duration(file_path):
+    """Возвращает длительность видео в секундах с помощью ffprobe."""
+    try:
+        command = [
+            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', file_path
+        ]
+        process = await asyncio.create_subprocess_exec(*command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            return float(stdout.decode().strip())
+        else:
+            print(f"Ошибка ffprobe для {file_path}: {stderr.decode()}")
+            return 0.0
+    except Exception as e:
+        print(f"Исключение при получении длительности видео {file_path}: {e}")
+        return 0.0
+
+
 # ==============================================================================
 # ---                     ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ                          ---
 # ==============================================================================
@@ -91,6 +110,31 @@ async def handle_processing(websocket, params):
     """Главная функция, управляющая процессом обработки видео."""
     temp_files_to_clean = []
     try:
+        intro_resolution = params.get('intro_resolution', '2k')
+        target_intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
+
+        if not os.path.exists(target_intro_path):
+            await send_log(websocket, f"Целевой файл интро ({os.path.basename(target_intro_path)}) не найден. Поиск источника...")
+            
+            source_intro = params.get('intro_file') # Приоритет №1: Явно указанный файл
+            if not source_intro:
+                await send_log(websocket, "Исходник не выбран, поиск стандартных файлов...")
+                # Приоритет №2: Поиск стандартных файлов
+                fallback_paths = [
+                    os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}.mkv"),
+                    os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}.mp4")
+                ]
+                source_intro = next((p for p in fallback_paths if os.path.exists(p)), None)
+
+            if not source_intro:
+                raise FileNotFoundError("Готовое интро не найдено и не удалось найти исходник для его создания. Пожалуйста, выберите файл интро.")
+
+            await send_log(websocket, f"Используем '{os.path.basename(source_intro)}' для создания интро.")
+            scale = "scale=1920:1080" if intro_resolution == 'fullhd' else "scale=2560:1440"
+            await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel','error','-i',source_intro,'-vf',scale,'-c:v',VIDEO_ENCODER,'-preset','medium','-c:a','copy',target_intro_path,'-y'], f"Создание интро {intro_resolution}")
+        
+        intro_path = target_intro_path # Теперь мы гарантированно используем правильный путь
+
         tmp_dir = "/dev/shm" if params.get('use_ram') and os.path.exists('/dev/shm') else '.'
         await send_log(websocket, "--- Этап 1: Подготовка данных ---")
         
@@ -116,15 +160,6 @@ async def handle_processing(websocket, params):
                 'video_orig': video2_path, 'audio_orig': audio2_source,
                 'start': hms_to_seconds(params['start2']), 'end': hms_to_seconds(params['end2'])
             })
-
-        # Подготовка интро
-        intro_resolution = params.get('intro_resolution', '2k')
-        intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
-        if not os.path.exists(intro_path):
-            source_intro = params.get('intro_file')
-            if not source_intro: raise FileNotFoundError("Готовое интро не найдено, выберите исходник!")
-            scale = "scale=2560:1440" if intro_resolution == '2k' else "scale=1920:1080"
-            await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel', 'error', '-i', source_intro, '-vf', scale, '-c:v', VIDEO_ENCODER, '-preset', 'medium', '-c:a', 'copy', intro_path, '-y'], f"Создание интро {intro_resolution}")
 
         video_concat_parts = [f"file '{intro_path}'"]
         audio_filter_definitions = []
@@ -258,41 +293,129 @@ async def handle_video_request(path, request_headers):
         # Для простоты вернем OK, браузер сам сделает следующий запрос с Range
         return (http.HTTPStatus.OK, headers, b"")
 
+async def handle_preview_generation(websocket, params):
+    """Вычисляет и отправляет карту таймлайна для предпросмотра."""
+    try:
+        await send_log(websocket, "--- Генерация карты предпросмотра ---")
+        timeline_map = []
+        total_duration = 0.0
+        
+        # 1. Интро
+        intro_resolution = params.get('intro_resolution', '2k')
+        target_intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
+
+        if not os.path.exists(target_intro_path):
+            await send_log(websocket, f"Целевой файл интро ({os.path.basename(target_intro_path)}) не найден. Поиск источника...")
+            
+            source_intro = params.get('intro_file')
+            if not source_intro:
+                await send_log(websocket, "Исходник не выбран, поиск стандартных файлов...")
+                fallback_paths = [
+                    os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}.mkv"),
+                    os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}.mp4")
+                ]
+                source_intro = next((p for p in fallback_paths if os.path.exists(p)), None)
+
+            if not source_intro:
+                raise FileNotFoundError("Готовое интро не найдено и не удалось найти исходник для его создания. Пожалуйста, выберите файл интро.")
+
+            await send_log(websocket, f"Используем '{os.path.basename(source_intro)}' для создания интро.")
+            scale = "scale=1920:1080" if intro_resolution == 'fullhd' else "scale=2560:1440"
+            await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel','error','-i',source_intro,'-vf',scale,'-c:v',VIDEO_ENCODER,'-preset','medium','-c:a','copy',target_intro_path,'-y'], f"Создание интро {intro_resolution}")
+        
+        intro_path = target_intro_path
+
+        intro_duration = await get_video_duration(intro_path)
+        intro_rel_path = os.path.relpath(intro_path, BROWSE_ROOT).replace('\\', '/')
+        
+        timeline_map.append({
+            "id": "intro", "source_file": intro_rel_path, "timeline_start": total_duration,
+            "duration": intro_duration, "source_start_time": 0
+        })
+        total_duration += intro_duration
+        
+        # 2. Сегменты
+        is_single_segment = params.get('is_single_segment') and params.get('mode') == 'single'
+        
+        # Сегмент 1
+        if not params.get('video1'): raise ValueError("Не выбран Видеофайл 1.")
+        start1 = hms_to_seconds(params['start1'])
+        end1 = hms_to_seconds(params['end1'])
+        duration1 = end1 - start1
+        if duration1 <= 0: raise ValueError("Некорректные таймкоды для Сегмента 1.")
+        
+        video1_rel_path = os.path.relpath(params['video1'], BROWSE_ROOT).replace('\\', '/')
+        timeline_map.append({
+            "id": "segment1", "source_file": video1_rel_path, "timeline_start": total_duration,
+            "duration": duration1, "source_start_time": start1
+        })
+        total_duration += duration1
+
+        # Сегмент 2 (если нужен)
+        if not is_single_segment:
+            video2_path = params['video1'] if params['mode'] == 'single' else params.get('video2')
+            if not video2_path: raise ValueError("Не указан Видеофайл 2.")
+            
+            start2 = hms_to_seconds(params['start2'])
+            end2 = hms_to_seconds(params['end2'])
+            duration2 = end2 - start2
+            if duration2 <= 0: raise ValueError("Некорректные таймкоды для Сегмента 2.")
+            
+            video2_rel_path = os.path.relpath(video2_path, BROWSE_ROOT).replace('\\', '/')
+            timeline_map.append({
+                "id": "segment2", "source_file": video2_rel_path, "timeline_start": total_duration,
+                "duration": duration2, "source_start_time": start2
+            })
+            total_duration += duration2
+            
+        await websocket.send(json.dumps({
+            "action": "preview_map_ready",
+            "total_duration": total_duration,
+            "timeline_map": timeline_map
+        }))
+        await send_log(websocket, "Карта предпросмотра успешно создана.")
+
+    except Exception as e:
+        await send_log(websocket, f"ОШИБКА генерации предпросмотра: {e}")
+        await websocket.send(json.dumps({"action": "error", "message": str(e)}))
 
 async def websocket_handler(websocket):
     """Обрабатывает сообщения от клиента WebSocket."""
-    # ... (код этой функции остается без изменений)
     print("Клиент WebSocket подключен.")
     try:
         async for message in websocket:
             data = json.loads(message)
             action = data.get("action")
-            if action in ["browse_path", "resolve_path"]:
+
+            if action == "generate_preview_map":
+                asyncio.create_task(handle_preview_generation(websocket, data.get("params", {})))
+            elif action == "process":
+                asyncio.create_task(handle_processing(websocket, data.get("params", {})))
+            elif action in ["browse_path", "resolve_path"]:
                 req_path = data.get("path", "/")
-                print(f"Получено: {action} для '{req_path}'")
                 abs_path = await secure_path(req_path)
                 if not abs_path:
                     await websocket.send(json.dumps({"action": "error", "message": "Доступ запрещен"}))
                     continue
                 if action == "browse_path":
                     try:
-                        entries = [
-                            {"name": e.name, "type": "dir" if e.is_dir() else "file"}
-                            for e in os.scandir(abs_path) if not e.name.startswith('.')
-                        ]
+                        entries = [{"name": e.name, "type": "dir" if e.is_dir() else "file"} for e in os.scandir(abs_path) if not e.name.startswith('.')]
                         entries.sort(key=lambda e: (e['type'] != 'dir', e['name'].lower()))
                         display_path = '/' + os.path.relpath(abs_path, BROWSE_ROOT).replace('\\', '/')
                         if display_path == '/.': display_path = '/'
                         await websocket.send(json.dumps({"action": "browse_result", "path": display_path, "entries": entries}))
-                    except Exception as e:
-                        print(f"Ошибка чтения '{abs_path}': {e}")
+                    except Exception as e: print(f"Ошибка чтения '{abs_path}': {e}")
                 elif action == "resolve_path":
-                    # ВАЖНО: Отправляем относительный путь для безопасности
-                    rel_path = os.path.relpath(abs_path, BROWSE_ROOT).replace('\\', '/')
-                    await websocket.send(json.dumps({"action": "path_resolved", "full_path": abs_path, "relative_path": rel_path}))
+                    response = {"action": "path_resolved", "full_path": abs_path}
+                    # В зависимости от настройки отправляем разные данные для src
+                    if FORCE_HTTP_STREAMING:
+                        response["relative_path"] = os.path.relpath(abs_path, BROWSE_ROOT).replace('\\', '/')
+                        response["preview_mode"] = "http"
+                    else:
+                        response["preview_mode"] = "file"
 
-            elif action == "process":
-                asyncio.create_task(handle_processing(websocket, data.get("params", {})))
+                    await websocket.send(json.dumps(response))
+
     except websockets.exceptions.ConnectionClosed:
         print("Клиент отключился.")
 
