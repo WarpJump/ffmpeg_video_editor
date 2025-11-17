@@ -19,8 +19,10 @@ FINAL_AUDIO_CODEC = "pcm_s16le"
 SERVER_PORT = 8765
 FORCE_HTTP_STREAMING = False
 # --- НАСТРОЙКИ ДЛЯ ФАЙЛОВОГО БРАУЗЕРА ---
-BROWSE_ROOT = os.path.realpath(os.path.expanduser("~"))
-
+BROWSE_ROOT = os.path.realpath(os.path.expanduser("/mnt/drive.stfpmi.ru/fpmi-raws/"))
+DEFAULT_OUTPUT_DIR = os.path.realpath(os.path.expanduser("/mnt/drive.stfpmi.ru/fpmi-raws-as-admin/Uploads"))
+HOME_DIR = os.path.expanduser("~")
+print(BROWSE_ROOT)
 # ==============================================================================
 # ---                      ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ                           ---
 # ==============================================================================
@@ -69,7 +71,7 @@ async def run_async_command(websocket, command, title=""):
         chunk = await process.stdout.read(128)
         if not chunk: break
         
-        decoded_chunk = buffer + chunk.decode(errors='ignore')
+        decoded_chunk = buffer + chunk.decode('utf-8', errors='ignore')
         lines = decoded_chunk.replace('\r', '\n').split('\n')
         buffer = lines.pop()
         
@@ -111,7 +113,13 @@ async def handle_processing(websocket, params):
     temp_files_to_clean = []
     try:
         intro_resolution = params.get('intro_resolution', '2k')
-        target_intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
+        
+        # Проверяем интро в домашней директории в первую очередь
+        target_intro_path = os.path.join(HOME_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv")
+        
+        # Если интро не найдено в домашней директории, проверяем стандартное расположение
+        if not os.path.exists(target_intro_path):
+            target_intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
 
         if not os.path.exists(target_intro_path):
             await send_log(websocket, f"Целевой файл интро ({os.path.basename(target_intro_path)}) не найден. Поиск источника...")
@@ -131,6 +139,9 @@ async def handle_processing(websocket, params):
 
             await send_log(websocket, f"Используем '{os.path.basename(source_intro)}' для создания интро.")
             scale = "scale=1920:1080" if intro_resolution == 'fullhd' else "scale=2560:1440"
+            
+            # Создаем интро в домашней директории
+            target_intro_path = os.path.join(HOME_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv")
             await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel','error','-i',source_intro,'-vf',scale,'-c:v',VIDEO_ENCODER,'-preset','medium','-c:a','copy',target_intro_path,'-y'], f"Создание интро {intro_resolution}")
         
         intro_path = target_intro_path # Теперь мы гарантированно используем правильный путь
@@ -215,8 +226,8 @@ async def handle_processing(websocket, params):
         base_name, _ = os.path.splitext(os.path.basename(segments[0]['video_orig']))
         output_name = f"{params.get('intro_resolution', '2k')}_{base_name}_final_edit.mkv"
 
-        # Используем выбранную директорию, если она есть, иначе - директорию из video1
-        output_dir = params.get('output_dir') or os.path.dirname(params['video1'])
+        # Используем выбранную директорию, если она есть, иначе - дефолтную выходную директорию
+        output_dir = params.get('output_dir') or DEFAULT_OUTPUT_DIR
         if not os.path.isdir(output_dir):
             raise ValueError(f"Выходная директория не существует: {output_dir}")
 
@@ -302,7 +313,13 @@ async def handle_preview_generation(websocket, params):
         
         # 1. Интро
         intro_resolution = params.get('intro_resolution', '2k')
-        target_intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
+        
+        # Проверяем интро в домашней директории в первую очередь
+        target_intro_path = os.path.join(HOME_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv")
+        
+        # Если интро не найдено в домашней директории, проверяем стандартное расположение
+        if not os.path.exists(target_intro_path):
+            target_intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
 
         if not os.path.exists(target_intro_path):
             await send_log(websocket, f"Целевой файл интро ({os.path.basename(target_intro_path)}) не найден. Поиск источника...")
@@ -321,6 +338,9 @@ async def handle_preview_generation(websocket, params):
 
             await send_log(websocket, f"Используем '{os.path.basename(source_intro)}' для создания интро.")
             scale = "scale=1920:1080" if intro_resolution == 'fullhd' else "scale=2560:1440"
+            
+            # Создаем интро в домашней директории
+            target_intro_path = os.path.join(HOME_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv")
             await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel','error','-i',source_intro,'-vf',scale,'-c:v',VIDEO_ENCODER,'-preset','medium','-c:a','copy',target_intro_path,'-y'], f"Создание интро {intro_resolution}")
         
         intro_path = target_intro_path
