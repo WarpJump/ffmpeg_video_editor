@@ -1,124 +1,35 @@
+--- START OF FILE index.html ---
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Видео Редактор v21 (Автономный)</title>
+    <title>Видео Редактор v26.3 (Final UX)</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
     <style>
-        .modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-        .modal-content { background: #282a36; padding: 20px; border-radius: 8px; width: 90%; max-width: 600px; border: 1px solid #6272a4; }
-        #file-list { height: 350px; overflow-y: auto; background: #21222c; padding: 5px; margin-bottom: 10px; border: 1px solid #44475a; }
-        .file-entry { cursor: pointer; padding: 5px 8px; border-radius: 3px; }
-        .file-entry:hover { background: #44475a; }
-        .file-entry.dir::before { content: '📁 '; } .file-entry.file::before { content: '📄 '; }
-        .hidden { display: none; }
-        #path-container { display: flex; align-items: center; margin-bottom: 10px; }
-        #current-path { flex-grow: 1; padding: 5px; background: #21222c; color: #f8f8f2; border: 1px solid #44475a; }
-        #up-btn { background: #6272a4; color: #f8f8f2; border: none; padding: 5px 10px; margin-left: 5px; cursor: pointer; }
-        #up-btn:hover { background: #bd93f9; }
-        .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; }
-        .virtual-player-container {
-            background: var(--log-bg);
-            padding: 10px;
-            border: 1px solid var(--panel-bg);
-            border-bottom: none;
-            display: none; /* Изначально скрыт */
-        }
-        .virtual-player-controls {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        #v-play-btn {
-            background: var(--accent-purple);
-            width: 40px;
-            height: 40px;
-            font-size: 1.5em;
-            padding: 0;
-            flex-shrink: 0;
-            margin: 0;
-        }
-        #v-time-display {
-            font-family: monospace;
-            font-size: 1.1em;
-            color: var(--accent-green);
-            min-width: 180px;
-        }
-        #v-progress-bar {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 100%;
-            height: 8px;
-            background: var(--panel-bg);
-            outline: none;
-            cursor: pointer;
-        }
-        #v-progress-bar::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            background: var(--accent-green);
-            border-radius: 50%;
-            cursor: pointer;
-        }
+        .modal-backdrop{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);display:flex;justify-content:center;align-items:center;z-index:1000} .modal-content{background:#282a36;padding:20px;border-radius:8px;width:90%;max-width:600px;border:1px solid #6272a4} #file-list{height:350px;overflow-y:auto;background:#21222c;padding:5px;margin-bottom:10px;border:1px solid #44475a} .file-entry{cursor:pointer;padding:5px 8px;border-radius:3px} .file-entry:hover{background:#44475a} .file-entry.dir::before{content:'📁 '} .file-entry.file::before{content:'📄 '} .hidden{display:none} #path-container{display:flex;align-items:center;margin-bottom:10px} #current-path{flex-grow:1;padding:5px;background:#21222c;color:#f8f8f2;border:1px solid #44475a} #up-btn{background:#6272a4;color:#f8f8f2;border:none;padding:5px 10px;margin-left:5px;cursor:pointer} #up-btn:hover{background:#bd93f9} .modal-buttons{display:flex;justify-content:flex-end;gap:10px}
+        .video-container { position: relative; width: 100%; background: black; border: 1px solid var(--panel-bg); }
+        .video-container video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        .video-container .inactive-player { visibility: hidden; }
     </style>
 </head>
 <body>
-    <h1>Видео Редактор v21 (Автономный)</h1>
-     <div class="container">
+    <h1>Видео Редактор v26.3 (Final UX)</h1>
+    <div class="container">
+        <!-- HTML-структура без изменений -->
         <div class="form-column">
-             <fieldset><legend>1. Настройки</legend>
-                <label>Режим Работы:</label>
-                <div>
-                    <input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()">
-                    <label for="singleFile" title="Обработать два сегмента из одного и того же видео/аудио файла.">Один файл</label>
-                    <input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()">
-                    <label for="twoFiles" title="Обработать два сегмента из двух разных видео/аудио файлов.">Два файла</label>
-                </div>
-                <div id="single_segment_toggle_div" style="margin-top:10px;">
-                    <input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()">
-                    <label for="is_single_segment" title="Вырезать один непрерывный кусок из видео, добавив интро и плавные переходы в начале и конце.">Обработать как единый ролик</label>
-                </div>
-                <div style="margin-top:15px;">
-                    <input type="checkbox" id="use_ram" checked>
-                    <label for="use_ram" title="Временные файлы будут созданы в /dev/shm (ОЗУ). Работает только на Linux. Ускоряет процесс, если достаточно ОЗУ.">Использовать RAM-диск</label>
-                </div>
-                <div style="margin-top:15px;">
-                    <label>Разрешение интро:</label>
-                    <div>
-                      <input type="radio" id="intro_fullhd" name="intro_resolution" value="fullhd"> <label for="intro_fullhd">FullHD (1080p)</label>
-                      <input type="radio" id="intro_2k" name="intro_resolution" value="2k" checked> <label for="intro_2k">2K (1440p)</label>
-                    </div>
-                </div>
-                <div style="margin-top:15px;">
-                    <label>Выходная директория (опция):</label>
-                    <button type="button" onclick="selectDirectory('output_dir')">Выбрать папку...</button>
-                    <div id="output_dir_path" class="file-path-display">(По умолчанию: папка с "Видео 1")</div>
-                </div>
-            </fieldset>
-            <fieldset><legend>2. Файлы</legend>
-                <button type="button" onclick="selectFile('intro_file')">1. Выбрать исходник интро (если нужно)</button><div id="intro_file_path" class="file-path-display"></div>
-                <button type="button" onclick="selectFile('video1')">2. Выбрать Видео 1</button><div id="video1_path" class="file-path-display"></div>
-                <div id="video2_container" class="hidden"><button type="button" onclick="selectFile('video2')">3. Выбрать Видео 2</button><div id="video2_path" class="file-path-display"></div></div>
-                <button type="button" onclick="selectFile('audio1')">Аудио 1 (опция)...</button><div id="audio1_path" class="file-path-display"></div>
-                <div id="audio2_container" class="hidden"><button type="button" onclick="selectFile('audio2')">Аудио 2 (опция)...</button><div id="audio2_path" class="file-path-display"></div></div>
-            </fieldset>
-             <fieldset><legend>3. Таймкоды</legend>
-                <h4>Сегмент 1</h4>
-                <div class="time-input-group"><label for="start1" style="width:60px;">Начало:</label> <input type="text" id="start1" placeholder="00:01:10"><button class="jump-btn" onclick="jumpToTime('start1')">▶</button></div>
-                <div class="time-input-group"><label for="end1" style="width:60px;">Конец:</label> <input type="text" id="end1" placeholder="00:45:30"><button class="jump-btn" onclick="jumpToTime('end1')">▶</button></div>
-                <div id="part2_timecodes"><hr style="border-color: var(--panel-bg);"><h4>Сегмент 2</h4>
-                    <div class="time-input-group"><label for="start2" style="width:60px;">Начало:</label> <input type="text" id="start2" placeholder="00:00:15"><button class="jump-btn" onclick="jumpToTime('start2')">▶</button></div>
-                    <div class="time-input-group"><label for="end2" style="width:60px;">Конец:</label> <input type="text" id="end2" placeholder="00:30:00"><button class="jump-btn" onclick="jumpToTime('end2')">▶</button></div>
-                </div>
-            </fieldset>
+            <fieldset><legend>1. Настройки</legend><label>Режим Работы:</label><div><input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()"><label for="singleFile" title="Обработать два сегмента из одного и того же видео/аудио файла.">Один файл</label><input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()"><label for="twoFiles" title="Обработать два сегмента из двух разных видео/аудио файлов.">Два файла</label></div><div id="single_segment_toggle_div" style="margin-top:10px;"><input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()"><label for="is_single_segment" title="Вырезать один непрерывный кусок из видео, добавив интро и плавные переходы в начале и конце.">Обработать как единый ролик</label></div><div style="margin-top:15px;"><input type="checkbox" id="use_ram" checked><label for="use_ram" title="Временные файлы будут созданы в /dev/shm (ОЗУ). Работает только на Linux. Ускоряет процесс, если достаточно ОЗУ.">Использовать RAM-диск</label></div><div style="margin-top:15px;"><label>Разрешение интро:</label><div><input type="radio" id="intro_fullhd" name="intro_resolution" value="fullhd"> <label for="intro_fullhd">FullHD (1080p)</label><input type="radio" id="intro_2k" name="intro_resolution" value="2k" checked> <label for="intro_2k">2K (1440p)</label></div></div><div style="margin-top:15px;"><label>Выходная директория (опция):</label><button type="button" onclick="selectDirectory('output_dir')">Выбрать папку...</button><div id="output_dir_path" class="file-path-display">(По умолчанию: папка вывода)</div></div></fieldset>
+            <fieldset><legend>2. Файлы</legend><button type="button" onclick="selectFile('intro_file')">1. Выбрать исходник интро (если нужно)</button><div id="intro_file_path" class="file-path-display"></div><button type="button" onclick="selectFile('video1')">2. Выбрать Видео 1</button><div id="video1_path" class="file-path-display"></div><div id="video2_container" class="hidden"><button type="button" onclick="selectFile('video2')">3. Выбрать Видео 2</button><div id="video2_path" class="file-path-display"></div></div><button type="button" onclick="selectFile('audio1')">Аудио 1 (опция)...</button><div id="audio1_path" class="file-path-display"></div><div id="audio2_container" class="hidden"><button type="button" onclick="selectFile('audio2')">Аудио 2 (опция)...</button><div id="audio2_path" class="file-path-display"></div></div></fieldset>
+            <fieldset><legend>3. Таймкоды</legend><h4>Сегмент 1</h4><div class="time-input-group"><label for="start1" style="width:60px;">Начало:</label> <input type="text" id="start1" placeholder="00:01:10"><button class="jump-btn" onclick="jumpToTime('start1')">▶</button></div><div class="time-input-group"><label for="end1" style="width:60px;">Конец:</label> <input type="text" id="end1" placeholder="00:45:30"><button class="jump-btn" onclick="jumpToTime('end1')">▶</button></div><div id="part2_timecodes"><hr style="border-color: var(--panel-bg);"><h4>Сегмент 2</h4><div class="time-input-group"><label for="start2" style="width:60px;">Начало:</label> <input type="text" id="start2" placeholder="00:00:15"><button class="jump-btn" onclick="jumpToTime('start2')">▶</button></div><div class="time-input-group"><label for="end2" style="width:60px;">Конец:</label> <input type="text" id="end2" placeholder="00:30:00"><button class="jump-btn" onclick="jumpToTime('end2')">▶</button></div></div></fieldset>
             <button type="button" id="submitBtn" class="action-btn" onclick="submitForm()">Начать Обработку</button>
         </div>
         <div class="preview-column">
             <h2>Предпросмотр</h2>
-            <video id="videoPreview" controls></video>
+            <div id="video-container" class="video-container">
+                <video id="videoPlayerA" playsinline preload="auto"></video>
+                <video id="videoPlayerB" class="inactive-player" playsinline preload="auto"></video>
+            </div>
             <div class="virtual-player-container" id="virtual-player">
                 <div class="virtual-player-controls">
                     <button id="v-play-btn">▶</button>
@@ -126,355 +37,188 @@
                     <input type="range" id="v-progress-bar" min="0" max="100" value="0">
                 </div>
             </div>
-            <h2>Лог выполнения</h2><pre id="log-output">Ожидание подключения к серверу...</pre>
+            <h2>Лог выполнения</h2>
+            <pre id="log-output">Ожидание подключения к серверу...</pre>
         </div>
     </div>
-    <div id="file-modal" class="modal-backdrop hidden">
-        <div class="modal-content">
-            <h3>Выбор файла</h3>
-            <div id="path-container">
-                <input id="current-path" type="text" value="/">
-                <button id="up-btn" title="Вверх">↑</button>
-            </div>
-            <div id="file-list">(пусто)</div>
-            <div class="modal-buttons">
-                <button id="close-btn">Закрыть</button>
-                <button id="select-dir-btn" class="hidden" style="background: var(--accent-green);">Выбрать папку</button>
-            </div>
-        </div>
-    </div>
+    <div id="file-modal" class="modal-backdrop hidden"><div class="modal-content"><h3>Выбор файла</h3><div id="path-container"><input id="current-path" type="text" value="/"><button id="up-btn" title="Вверх">↑</button></div><div id="file-list">(пусто)</div><div class="modal-buttons"><button id="close-btn">Закрыть</button><button id="select-dir-btn" class="hidden" style="background: var(--accent-green);">Выбрать папку</button></div></div></div>
+    
     <script>
         const SERVER_PORT = "%%SERVER_PORT%%";
         const logOutput = document.getElementById('log-output');
         let filePaths = { video1: '', video2: '', audio1: '', audio2: '', intro_file: '', output_dir: '' };
         let ws;
         let currentId = '';
-        let virtualPlayerState = { isPlaying: false, currentTime: 0, duration: 0, isSeeking: false };
-        let timelineMap = []; // Для виртуального плеера
 
-        function hmsToSeconds(str) {
-            if (!str) return 0;
-            const p = str.split(':').map(Number);
-            let s = 0;
-            if (p.length === 3) s = p[0] * 3600 + p[1] * 60 + p[2];
-            else if (p.length === 2) s = p[0] * 60 + p[1];
-            else if (p.length === 1 && str) s = parseFloat(str);
-            return isNaN(s) ? 0 : s;
-        }
-        function secondsToHMS(s) {
-            const h = Math.floor(s / 3600);
-            const m = Math.floor((s % 3600) / 60);
-            const sec = Math.floor(s % 60);
-            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
-        }
+        const FRAGMENT_DURATION = 10;
+        const PRELOAD_SECONDS = 5;
 
+        let currentFragment = { start: -1, duration: 0 };
+        let totalFinalDuration = 0;
+        let virtualPlayerState = { isPlaying: false, currentTime: 0, isSeeking: false };
+        let lastProcessingParams = {};
+        let activePlayer, hiddenPlayer;
+        let lastRequestedTime = -1;
+        let lastPreloadTime = -1;
+
+        function logDebug(message, ...args) { console.log(`[PLAYER DEBUG @ ${new Date().toLocaleTimeString()}] ${message}`, ...args); }
+        function swapPlayers() { logDebug(`--- SWAP PLAYERS: ${activePlayer.id} -> ${hiddenPlayer.id} ---`); [activePlayer, hiddenPlayer] = [hiddenPlayer, activePlayer]; activePlayer.classList.remove('inactive-player'); hiddenPlayer.classList.add('inactive-player'); hiddenPlayer.src = ''; }
+        function hmsToSeconds(str) { if (!str) return 0; const p = str.split(':').map(Number); let s = 0; if (p.length === 3) s = p[0] * 3600 + p[1] * 60 + p[2]; else if (p.length === 2) s = p[0] * 60 + p[1]; else if (p.length === 1 && str) s = parseFloat(str); return isNaN(s) ? 0 : s; }
+        function secondsToHMS(s) { s = s || 0; const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); const sec = Math.floor(s % 60); return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`; }
+        
         function jumpToTime(id) {
-            const input = document.getElementById(id);
-            const time = hmsToSeconds(input.value);
-            const video = document.getElementById('videoPreview');
-            if (!isNaN(time) && video.duration) {
-                video.currentTime = time;
-                video.play();
-            }
+            const input = document.getElementById(id); const time = hmsToSeconds(input.value);
+            const videoKey = id.includes('2') ? 'video2' : 'video1';
+            const videoPath = filePaths[videoKey];
+            if (isNaN(time) || !videoPath) return;
+
+            virtualPlayerState.isPlaying = false; document.getElementById('v-play-btn').textContent = '▶';
+            activePlayer.pause(); hiddenPlayer.pause();
+            const relativeVideoPath = filePaths[videoKey + '_relative'] || videoPath;
+            activePlayer.src = `http://127.0.0.1:${SERVER_PORT}/video?path=${encodeURIComponent(relativeVideoPath)}`;
+            activePlayer.oncanplaythrough = () => { activePlayer.currentTime = time; activePlayer.play(); activePlayer.oncanplaythrough = null; };
         }
-
-        function connect() {
-            ws = new WebSocket(`ws://127.0.0.1:${SERVER_PORT}`);
-            ws.onopen = () => { 
-                console.log('WS открыт');
-                logOutput.textContent = 'Соединение установлено. Готов к работе.\n'; 
-            };
-            ws.onerror = (err) => { 
-                console.error('WS ошибка:', err);
-                logOutput.textContent += 'Ошибка WS. Проверьте порт.\n'; 
-            };
-            ws.onclose = () => { 
-                console.log('WS закрыт');
-                setTimeout(connect, 2000); 
-            };
-            ws.onmessage = (event) => {
-                console.log('WS сообщение получено:', event.data);
-                const data = JSON.parse(event.data);
-                console.log('Парс: action=', data.action, 'entries length=', data.entries ? data.entries.length : 'no entries');
-
-                if (data.action === 'browse_result') {
-                    renderBrowser(data);
-                } else if (data.action === 'path_resolved') {
-                    if (data.full_path) {
-                        filePaths[currentId] = data.full_path;
-                        document.getElementById(currentId + '_path').textContent = data.full_path;
-                        if (currentId === 'video1' || currentId === 'video2') {
-                            document.getElementById('videoPreview').src = data.preview_mode === 'http' ? `http://127.0.0.1:${SERVER_PORT}/video?file=${encodeURIComponent(data.relative_path)}` : 'file://' + data.full_path;
-                        }
-                        if (currentId === 'output_dir') {
-                            document.getElementById('output_dir_path').textContent = data.full_path;
-                        }
-                    }
-                    document.getElementById('file-modal').classList.add('hidden');
-                    document.getElementById('select-dir-btn').classList.add('hidden');
-                } else if (data.action === 'error') {
-                    console.error('Ошибка от сервера:', data.message);
-                    document.getElementById('file-list').innerHTML = `<div style="color: red; padding: 10px;">Ошибка: ${data.message}</div>`;
-                } else if (data.action === 'log') {
-                    if (data.message.startsWith('frame=')) {
-                        const lines = logOutput.textContent.split('\n');
-                        if (lines.length > 1 && lines[lines.length - 2].startsWith('frame=')) {
-                            lines[lines.length - 2] = data.message;
-                            logOutput.textContent = lines.join('\n');
-                        } else {
-                            logOutput.textContent += data.message + '\n';
-                        }
-                    } else {
-                        logOutput.textContent += data.message + '\n';
-                    }
-                    logOutput.scrollTop = logOutput.scrollHeight;
-                } else if (data.action === 'finished') {
-                    document.getElementById('submitBtn').disabled = false;
-                    document.getElementById('submitBtn').textContent = 'Начать Обработку';
-                } else if (data.action === 'preview_map_ready') {
-                    timelineMap = data.timeline_map;
-                    virtualPlayerState.duration = data.total_duration;
-                    document.getElementById('v-progress-bar').max = data.total_duration;
-                    document.getElementById('v-time-display').textContent = `00:00:00 / ${secondsToHMS(data.total_duration)}`;
-                    showVirtualPlayer();
-                }
-            };
-        }
-
-        function sendMessage(action, path) {
-            console.log(`Отправка: ${action} для ${path}`);
-            ws.send(JSON.stringify({ action, path }));
-        }
-
-        function renderBrowser(data) {
-            console.log('renderBrowser вызван, entries:', data.entries ? data.entries.length : 0);
-            const fileList = document.getElementById('file-list');
-            const pathInput = document.getElementById('current-path');
-            
-            pathInput.value = data.path;
-            
-            fileList.innerHTML = '(загрузка...)';
-            
-            let html = '';
-            const path = data.path;
-            const entries = data.entries || [];
-            
-            if (path !== '/') {
-                const parentPath = path.substring(0, path.lastIndexOf('/')) || '/';
-                html += `<div class="file-entry dir" data-path="${parentPath}">.. (Наверх)</div>`;
-            }
-            
-            html += entries.map(e => {
-                if (!e || !e.name) return '';
-                const fullPath = (path === '/' ? '' : path) + '/' + e.name;
-                return `<div class="file-entry ${e.type || 'file'}" data-path="${fullPath}">${e.name}</div>`;
-            }).join('');
-            
-            fileList.innerHTML = html || '(пусто)';
-            console.log('Рендер завершён, HTML length:', html.length);
-        }
-
-        function goUp() {
-            const pathInput = document.getElementById('current-path');
-            let currentPath = pathInput.value;
-            if (currentPath !== '/') {
-                const parentPath = currentPath.substring(0, currentPath.lastIndexOf('/')) || '/';
-                sendMessage('browse_path', parentPath);
-            }
-        }
-
-        function openModal(id) {
-            currentId = id;
-            console.log('Открываем модалку для', id);
-            document.getElementById('file-modal').classList.remove('hidden');
-            document.getElementById('file-list').innerHTML = '(загрузка...)';
-            sendMessage('browse_path', '/');
-        }
-
-        function selectFile(id) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) { 
-                console.error('WS не готов');
-                logOutput.textContent += '\nОшибка: нет соединения.\n'; return; 
-            }
-            document.getElementById('select-dir-btn').classList.add('hidden');
-            openModal(id);
-        }
-
-        function selectDirectory(id) {
-            document.getElementById('select-dir-btn').classList.remove('hidden');
-            openModal(id);
-        }
-
-        function toggleMode() {
-            const isSingleFileMode = document.getElementById('singleFile').checked;
-            const isSingleSegmentMode = document.getElementById('is_single_segment').checked;
-            
-            document.getElementById('video2_container').style.display = isSingleFileMode ? 'none' : 'block';
-            document.getElementById('audio2_container').style.display = isSingleFileMode ? 'none' : 'block';
-            document.getElementById('single_segment_toggle_div').style.display = isSingleFileMode ? 'block' : 'none';
-            
-            const showSecondTimecodes = !isSingleFileMode || (isSingleFileMode && !isSingleSegmentMode);
-            document.getElementById('part2_timecodes').style.display = showSecondTimecodes ? 'block' : 'none';
-
-            saveState(); 
-        }
-
-        function submitForm() {
-            if (!ws || ws.readyState !== WebSocket.OPEN) { logOutput.textContent += '\nОшибка: нет соединения.\n'; return; }
-            if (!filePaths.video1) { alert("Пожалуйста, выберите Видео 1"); return; }
-            
-            document.getElementById('submitBtn').disabled = true;
-            document.getElementById('submitBtn').textContent = 'Обработка...';
-            logOutput.textContent = 'Запускаем...\n';
-            
-            const params = {
-                use_ram: document.getElementById('use_ram').checked,
-                mode: document.querySelector('input[name="mode"]:checked').value,
-                is_single_segment: document.getElementById('is_single_segment').checked,
-                intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value,
-                start1: document.getElementById('start1').value, end1: document.getElementById('end1').value,
-                start2: document.getElementById('start2').value, end2: document.getElementById('end2').value,
-                output_dir: filePaths.output_dir,
-                ...filePaths
-            };
-            ws.send(JSON.stringify({ action: 'process', params: params }));
-        }
-
-        // Виртуальный плеер функции
-        function showVirtualPlayer() {
-            document.getElementById('virtual-player').style.display = 'block';
-        }
-
-        function handleVirtualPlayPause() {
-            const video = document.getElementById('videoPreview');
-            if (virtualPlayerState.isPlaying) {
-                video.pause();
-                virtualPlayerState.isPlaying = false;
-                document.getElementById('v-play-btn').textContent = '▶';
-            } else {
-                const globalTime = parseFloat(document.getElementById('v-progress-bar').value);
-                seekToGlobalTime(globalTime);
-                video.play();
-                virtualPlayerState.isPlaying = true;
-                document.getElementById('v-play-btn').textContent = '⏸';
-            }
-        }
-
-        function handleVirtualSeek(event) {
-            const globalTime = parseFloat(event.target.value);
-            virtualPlayerState.currentTime = globalTime;
-            updateTimeDisplay();
-            if (!virtualPlayerState.isSeeking) {
-                seekToGlobalTime(globalTime);
-            }
-        }
-
-        function seekToGlobalTime(globalTime) {
-            const segment = timelineMap.find(s => globalTime >= s.timeline_start && globalTime < s.timeline_start + s.duration);
-            if (segment) {
-                const localTime = globalTime - segment.timeline_start + segment.source_start_time;
-                document.getElementById('videoPreview').currentTime = localTime;
-                document.getElementById('videoPreview').src = segment.preview_mode === 'http' ? `http://127.0.0.1:${SERVER_PORT}/video?file=${encodeURIComponent(segment.relative_path)}&start=${localTime}` : 'file://' + segment.source_file;
-            }
-        }
-
+        
         function updateTimeDisplay() {
-            document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(virtualPlayerState.duration)}`;
+            document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(totalFinalDuration)}`;
             document.getElementById('v-progress-bar').value = virtualPlayerState.currentTime;
         }
 
-        function onVideoTimeUpdate() {
-            if (virtualPlayerState.isPlaying && !virtualPlayerState.isSeeking) {
-                const video = document.getElementById('videoPreview');
-                const globalTime = timelineMap.find(s => video.currentTime >= s.source_start_time && video.currentTime < s.source_start_time + s.duration)?.timeline_start + (video.currentTime - s.source_start_time) || 0;
-                virtualPlayerState.currentTime = globalTime;
-                updateTimeDisplay();
+        function requestPreviewFragment(globalTime, isPreload = false) {
+            globalTime = Math.max(0, globalTime);
+            const roundedStart = Math.floor(globalTime / FRAGMENT_DURATION) * FRAGMENT_DURATION;
+            
+            if (isPreload && (lastPreloadTime === roundedStart || lastRequestedTime === roundedStart)) return;
+            if (!isPreload && lastRequestedTime === roundedStart && activePlayer.src) return;
+
+            if (isPreload) {
+                lastPreloadTime = roundedStart;
+            } else {
+                lastRequestedTime = roundedStart;
+                lastPreloadTime = -1;
+                hiddenPlayer.src = '';
+            }
+            
+            logDebug(`REQUEST fragment from ${secondsToHMS(roundedStart)}. Preload: ${isPreload}.`);
+            ws.send(JSON.stringify({ action: "generate_preview_fragment", start_time: roundedStart, params: lastProcessingParams }));
+        }
+
+        function onPreviewFragmentReady(data) {
+            const receivedTime = data.start_time;
+            const url = `http://127.0.0.1:${SERVER_PORT}/video?path=${encodeURIComponent(data.relative_path)}`;
+            
+            if (lastRequestedTime === receivedTime) {
+                logDebug(`RECEIVED fragment for ACTIVE player at ${secondsToHMS(receivedTime)}.`);
+                currentFragment = { start: data.start_time, duration: data.duration };
+                activePlayer.src = url;
+                const seekTo = Math.max(0, virtualPlayerState.currentTime - data.start_time);
+                activePlayer.currentTime = seekTo;
+                if (virtualPlayerState.isPlaying) { activePlayer.play().catch(console.error); }
+            } else if (lastPreloadTime === receivedTime) {
+                logDebug(`RECEIVED fragment for HIDDEN player at ${secondsToHMS(receivedTime)}.`);
+                hiddenPlayer.src = url;
+            } else {
+                logDebug(`RECEIVED STALE fragment for ${secondsToHMS(receivedTime)}. Ignoring.`);
             }
         }
 
-        function saveState() {
-            const state = {
-                filePaths,
-                start1: document.getElementById('start1').value,
-                end1: document.getElementById('end1').value,
-                start2: document.getElementById('start2').value,
-                end2: document.getElementById('end2').value,
-                mode: document.querySelector('input[name="mode"]:checked').value,
-                is_single_segment: document.getElementById('is_single_segment').checked,
-                use_ram: document.getElementById('use_ram').checked,
-                intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value
-            };
-            localStorage.setItem('videoEditorState', JSON.stringify(state));
+        function onPreviewMapReady(data) {
+            totalFinalDuration = data.total_duration;
+            document.getElementById('v-progress-bar').max = totalFinalDuration;
+            virtualPlayerState.currentTime = 0;
+            updateTimeDisplay();
+            document.getElementById('virtual-player').style.display = 'block';
+            currentFragment = { start: -1, duration: 0 };
+            requestPreviewFragment(0);
         }
 
-        function loadState() {
-            const saved = localStorage.getItem('videoEditorState');
-            if (saved) {
-                const state = JSON.parse(saved);
-                filePaths = { ...filePaths, ...state.filePaths };
-                Object.entries({ start1: 'start1', end1: 'end1', start2: 'start2', end2: 'end2' }).forEach(([key, id]) => {
-                    document.getElementById(id).value = state[key] || '';
-                });
-                document.querySelector(`input[name="mode"][value="${state.mode || 'single'}"]`).checked = true;
-                document.getElementById('is_single_segment').checked = state.is_single_segment || false;
-                document.getElementById('use_ram').checked = state.use_ram !== false;
-                document.querySelector(`input[name="intro_resolution"][value="${state.intro_resolution || '2k'}"]`).checked = true;
-                Object.keys(filePaths).forEach(key => {
-                    if (filePaths[key]) {
-                        document.getElementById(key + '_path').textContent = filePaths[key];
-                    }
-                });
-                if (filePaths.video1 || filePaths.video2) {
-                    document.getElementById('videoPreview').src = 'file://' + (filePaths.video1 || filePaths.video2);
-                }
-            }
-        }
+        function gatherCurrentParams() { lastProcessingParams = { use_ram: document.getElementById('use_ram').checked, mode: document.querySelector('input[name="mode"]:checked').value, is_single_segment: document.getElementById('is_single_segment').checked, intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value, start1: document.getElementById('start1').value, end1: document.getElementById('end1').value, start2: document.getElementById('start2').value, end2: document.getElementById('end2').value, output_dir: filePaths.output_dir, ...filePaths }; return lastProcessingParams; }
+        function requestPreviewMap() { if (ws && ws.readyState === WebSocket.OPEN && filePaths.video1) { logOutput.textContent += '\nЗапрашиваем карту предпросмотра...\n'; gatherCurrentParams(); ws.send(JSON.stringify({ action: 'generate_preview_map', params: lastProcessingParams })); } }
+        function submitForm() { if (!ws || ws.readyState !== WebSocket.OPEN || !filePaths.video1) return; document.getElementById('submitBtn').disabled = true; document.getElementById('submitBtn').textContent = 'Обработка...'; logOutput.textContent = 'Запускаем финальную сборку...\n'; ws.send(JSON.stringify({ action: 'process', params: gatherCurrentParams() })); }
+        function sendMessage(action, path, id) { ws.send(JSON.stringify({ action, path, id })); }
+        function connect() { ws = new WebSocket(`ws://127.0.0.1:${SERVER_PORT}`); ws.onopen = () => { logOutput.textContent = 'Соединение установлено.\n'; setTimeout(requestPreviewMap, 500); }; ws.onerror = () => { logOutput.textContent += 'Ошибка WS.\n'; }; ws.onclose = () => { setTimeout(connect, 2000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); switch(data.action) { case 'log': if (data.message.startsWith('frame=')) { const lines = logOutput.textContent.split('\n'); if (lines.length > 1 && lines[lines.length - 2].startsWith('frame=')) { lines[lines.length - 2] = data.message; logOutput.textContent = lines.join('\n'); } else { logOutput.textContent += data.message + '\n'; } } else { logOutput.textContent += data.message + '\n'; } logOutput.scrollTop = logOutput.scrollHeight; break; case 'finished': document.getElementById('submitBtn').disabled = false; document.getElementById('submitBtn').textContent = 'Начать Обработку'; break; case 'browse_result': renderBrowser(data); break; case 'path_resolved': if (data.full_path) { filePaths[currentId] = data.full_path; if(data.relative_path) { filePaths[currentId + '_relative'] = data.relative_path; } document.getElementById(currentId + '_path').textContent = data.full_path; if (currentId === 'video1' || currentId === 'video2') requestPreviewMap(); } document.getElementById('file-modal').classList.add('hidden'); document.getElementById('select-dir-btn').classList.add('hidden'); saveState(); break; case 'error': logOutput.textContent += `\nОШИБКА: ${data.message}\n`; lastRequestedTime = lastPreloadTime = -1; break; case 'preview_map_ready': onPreviewMapReady(data); break; case 'preview_fragment_ready': onPreviewFragmentReady(data); break; } }; }
+        function renderBrowser(data) { const fileList = document.getElementById('file-list'); document.getElementById('current-path').value = data.path; fileList.innerHTML = ''; let html = ''; if (data.path !== '/') { const parentPath = data.path.substring(0, data.path.lastIndexOf('/')) || '/'; html += `<div class="file-entry dir" data-path="${parentPath}">.. (Наверх)</div>`; } html += (data.entries || []).map(e => `<div class="file-entry ${e.type}" data-path="${(data.path === '/' ? '' : data.path) + '/' + e.name}">${e.name}</div>`).join(''); fileList.innerHTML = html || '(пусто)'; }
+        function goUp() { const p = document.getElementById('current-path').value; if (p !== '/') sendMessage('browse_path', p.substring(0, p.lastIndexOf('/')) || '/', currentId); }
+        function openModal(id) { currentId = id; document.getElementById('file-modal').classList.remove('hidden'); document.getElementById('file-list').innerHTML = '(загрузка...)'; sendMessage('browse_path', '/', currentId); }
+        function selectFile(id) { if (!ws || ws.readyState !== WebSocket.OPEN) return; document.getElementById('select-dir-btn').classList.add('hidden'); openModal(id); }
+        function selectDirectory(id) { document.getElementById('select-dir-btn').classList.remove('hidden'); openModal(id); }
+        function toggleMode() { const isSingleFile = document.getElementById('singleFile').checked; const isSingleSeg = document.getElementById('is_single_segment').checked; document.getElementById('video2_container').style.display = isSingleFile ? 'none' : 'block'; document.getElementById('audio2_container').style.display = isSingleFile ? 'none' : 'block'; document.getElementById('single_segment_toggle_div').style.display = isSingleFile ? 'block' : 'none'; document.getElementById('part2_timecodes').style.display = !isSingleFile || (isSingleFile && !isSingleSeg) ? 'block' : 'none'; saveState(); requestPreviewMap(); }
+        function saveState() { const state = { filePaths, start1: document.getElementById('start1').value, end1: document.getElementById('end1').value, start2: document.getElementById('start2').value, end2: document.getElementById('end2').value, mode: document.querySelector('input[name="mode"]:checked').value, is_single_segment: document.getElementById('is_single_segment').checked, use_ram: document.getElementById('use_ram').checked, intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value }; localStorage.setItem('videoEditorState', JSON.stringify(state)); }
+        function loadState() { const saved = localStorage.getItem('videoEditorState'); if (saved) { const state = JSON.parse(saved); filePaths = { ...filePaths, ...state.filePaths }; document.getElementById('start1').value = state.start1 || ''; document.getElementById('end1').value = state.end1 || ''; document.getElementById('start2').value = state.start2 || ''; document.getElementById('end2').value = state.end2 || ''; document.querySelector(`input[name="mode"][value="${state.mode || 'single'}"]`).checked = true; document.getElementById('is_single_segment').checked = state.is_single_segment || false; document.getElementById('use_ram').checked = state.use_ram !== false; document.querySelector(`input[name="intro_resolution"][value="${state.intro_resolution || '2k'}"]`).checked = true; Object.keys(filePaths).forEach(key => { if (filePaths[key] && !key.endsWith('_relative')) document.getElementById(key + '_path').textContent = filePaths[key]; }); } }
 
         window.onload = () => {
-            connect();
-            loadState(); 
-            toggleMode();
-
-            document.querySelectorAll('input[type="text"]').forEach(input => {
-                input.addEventListener('input', saveState); 
+            loadState(); connect(); toggleMode();
+            activePlayer = document.getElementById('videoPlayerA'); hiddenPlayer = document.getElementById('videoPlayerB');
+            const vPlayBtn = document.getElementById('v-play-btn'); const vProgressBar = document.getElementById('v-progress-bar');
+            
+            [activePlayer, hiddenPlayer].forEach(p => {
+                p.addEventListener('timeupdate', () => {
+                    if (p !== activePlayer || virtualPlayerState.isSeeking) return;
+                    virtualPlayerState.currentTime = currentFragment.start + p.currentTime;
+                    document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(totalFinalDuration)}`;
+                    if(!virtualPlayerState.isSeeking) { vProgressBar.value = virtualPlayerState.currentTime; }
+                    if (p.duration > 0 && p.duration - p.currentTime < PRELOAD_SECONDS) {
+                        const nextStart = currentFragment.start + FRAGMENT_DURATION;
+                        if (nextStart < totalFinalDuration) { requestPreviewFragment(nextStart, true); }
+                    }
+                });
+                p.addEventListener('ended', () => {
+                    if (p !== activePlayer || !virtualPlayerState.isPlaying) return;
+                    logDebug(`ENDED event for ${activePlayer.id}.`);
+                    const nextFragmentStart = currentFragment.start + FRAGMENT_DURATION;
+                    if (nextFragmentStart >= totalFinalDuration) { virtualPlayerState.isPlaying = false; vPlayBtn.textContent = '▶'; return; }
+                    const swapAndPlay = () => { currentFragment.start = nextFragmentStart; currentFragment.duration = hiddenPlayer.duration; swapPlayers(); activePlayer.play().catch(e => { logDebug(`Error playing swapped player: ${e.message}`); virtualPlayerState.isPlaying = false; vPlayBtn.textContent = '▶'; }); };
+                    if (hiddenPlayer.readyState >= 3 && hiddenPlayer.src) { logDebug('Hidden player is READY. Swapping immediately.'); swapAndPlay(); } 
+                    else { logDebug('Hidden player is NOT READY. Waiting...'); hiddenPlayer.oncanplay = () => { logDebug('Hidden player is now ready (oncanplay). Swapping.'); swapAndPlay(); hiddenPlayer.oncanplay = null; }; }
+                });
+                p.addEventListener('loadedmetadata', () => { const container = document.getElementById('video-container'); const ar = p.videoWidth / p.videoHeight; container.style.height = `${container.clientWidth / ar}px`; });
             });
-            document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(input => {
-                input.addEventListener('change', saveState);
-            });
 
+            vPlayBtn.addEventListener('click', () => { virtualPlayerState.isPlaying = !virtualPlayerState.isPlaying; vPlayBtn.textContent = virtualPlayerState.isPlaying ? '⏸' : '▶'; if (virtualPlayerState.isPlaying) { if (activePlayer.src) activePlayer.play().catch(console.error); else requestPreviewFragment(virtualPlayerState.currentTime); } else { activePlayer.pause(); } });
+            
+            // ### КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Полностью переработанная логика перемотки для мгновенного отклика ###
+            vProgressBar.addEventListener('mousedown', () => {
+                virtualPlayerState.isSeeking = true;
+            });
+            vProgressBar.addEventListener('input', (e) => {
+                // Пока пользователь тащит ползунок, обновляем только текстовое поле и наше внутреннее состояние
+                if (virtualPlayerState.isSeeking) {
+                    virtualPlayerState.currentTime = parseFloat(e.target.value);
+                    document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(totalFinalDuration)}`;
+                }
+            });
+            vProgressBar.addEventListener('change', (e) => {
+                // Пользователь отпустил ползунок. Это финальная точка.
+                // 1. Фиксируем состояние
+                virtualPlayerState.isSeeking = false;
+                virtualPlayerState.currentTime = parseFloat(e.target.value);
+                logDebug(`SEEK TO: ${secondsToHMS(virtualPlayerState.currentTime)}`);
+
+                // 2. НЕМЕДЛЕННО обновляем весь UI (ползунок и текст)
+                // Это гарантирует, что ползунок "перепрыгнет" в новую позицию сразу же.
+                updateTimeDisplay(); 
+
+                // 3. Останавливаем любое воспроизведение и очищаем источники
+                activePlayer.pause();
+                hiddenPlayer.pause();
+                activePlayer.src = '';
+                hiddenPlayer.src = '';
+                
+                // 4. Сбрасываем метки запрошенных фрагментов
+                lastRequestedTime = -1;
+                lastPreloadTime = -1;
+
+                // 5. Запрашиваем новый фрагмент для этой временной метки
+                requestPreviewFragment(virtualPlayerState.currentTime);
+            });
+            
+            ['start1', 'end1', 'start2', 'end2'].forEach(id => { document.getElementById(id).addEventListener('change', () => { saveState(); requestPreviewMap(); }); });
+            document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(input => input.addEventListener('change', () => { saveState(); if (input.name === 'mode' || input.name === 'is_single_segment' || input.name === 'intro_resolution') { requestPreviewMap(); } }));
             document.getElementById('close-btn').onclick = () => document.getElementById('file-modal').classList.add('hidden');
             document.getElementById('up-btn').onclick = goUp;
-            document.getElementById('select-dir-btn').onclick = () => {
-                const path = document.getElementById('current-path').value;
-                sendMessage('resolve_path', path);
-            };
-            document.getElementById('current-path').onkeydown = (e) => { if (e.key === 'Enter') sendMessage('browse_path', e.target.value); };
-            
-            document.getElementById('file-list').onclick = (e) => {
-                const target = e.target.closest('.file-entry');
-                if (!target) return;
-                const path = target.dataset.path;
-                const isDir = target.classList.contains('dir');
-                if (isDir) {
-                    sendMessage('browse_path', path);
-                } else if (!document.getElementById('select-dir-btn').classList.contains('hidden')) {
-                    return;
-                } else {
-                    sendMessage('resolve_path', path);
-                }
-            };
-
-            const videoEl = document.getElementById('videoPreview');
-            videoEl.addEventListener('loadedmetadata', () => {
-                if (timelineMap.length === 0) {
-                    ws.send(JSON.stringify({ action: 'generate_preview_map', params: { ...filePaths, start1: document.getElementById('start1').value, end1: document.getElementById('end1').value, start2: document.getElementById('start2').value, end2: document.getElementById('end2').value } }));
-                }
-            });
-            videoEl.addEventListener('timeupdate', onVideoTimeUpdate);
-            videoEl.addEventListener('ended', () => {
-                virtualPlayerState.isPlaying = false;
-                document.getElementById('v-play-btn').textContent = '▶';
-            });
+            document.getElementById('select-dir-btn').onclick = () => { sendMessage('resolve_path', document.getElementById('current-path').value, currentId); };
+            document.getElementById('current-path').onkeydown = (e) => { if (e.key === 'Enter') sendMessage('browse_path', e.target.value, currentId); };
+            document.getElementById('file-list').onclick = (e) => { const t = e.target.closest('.file-entry'); if (t) { if (t.classList.contains('dir')) sendMessage('browse_path', t.dataset.path, currentId); else if (!document.getElementById('select-dir-btn').classList.contains('hidden')) return; else sendMessage('resolve_path', t.dataset.path, currentId); } };
         };
     </script>
 </body>
