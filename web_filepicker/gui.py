@@ -18,6 +18,8 @@ DEFAULT_INTRO_DIR = os.path.realpath(os.path.join(os.path.expanduser("~"), "Docu
 INTRO_BASE_NAME = "intro_new_sponsored"
 VIDEO_ENCODER = "libx264"
 FINAL_AUDIO_CODEC = "pcm_s16le"
+PREVIEW_HEIGHT = 480
+
 SERVER_PORT = 8765
 FORCE_HTTP_STREAMING = True
 
@@ -110,88 +112,57 @@ async def handle_preview_fragment(websocket, params, request_start_time: float):
 
     try:
         timeline_map, total_duration = await build_timeline_map(websocket, params)
-        if not timeline_map:
-            await send_log(websocket, "Не удалось построить карту видео. Проверьте выбор файлов.")
-            return
-
-        # Определяем границы фрагмента
         frag_start = request_start_time
         frag_end = min(request_start_time + FRAGMENT_DURATION, total_duration)
         
-        # Находим сегменты, которые попадают в этот промежуток времени
         parts_in_fragment = [p for p in timeline_map if p['timeline_start'] < frag_end and p['timeline_start'] + p['duration'] > frag_start]
         if not parts_in_fragment: return
-        
-        # Определяем целевое разрешение (по первому "segmentX", т.е. основному видео)
-        main_video_part = next((p for p in timeline_map if p['id'].startswith('segment')), None)
-        if not main_video_part:
-            await send_log(websocket, "Не найден основной видео-сегмент для определения разрешения.")
-            return
-        target_res = await get_video_resolution(main_video_part['source_file'])
-        if not target_res:
-             await send_log(websocket, f"Не удалось определить разрешение для {main_video_part['source_file']}")
-             return
 
         filters, video_pads, audio_pads = [], [], []
         ffmpeg_inputs = []
 
-        # --- ГЛАВНОЕ ИСПРАВЛЕНИЕ: Используем -ss перед -i для каждого сегмента ---
-        # Вместо того чтобы создавать список уникальных файлов, мы добавляем вход 
-        # для каждого сегмента отдельно с предварительной перемоткой.
-        # Это позволяет мгновенно получать доступ к 50-й минуте видео.
-
         for i, part in enumerate(parts_in_fragment):
-            # Вычисляем, какой кусок исходного файла нам нужен
             t_start_in_part = max(0, frag_start - part['timeline_start'])
             t_end_in_part = min(part['duration'], frag_end - part['timeline_start'])
             
             absolute_start_source = part['source_start_time'] + t_start_in_part
             duration_needed = t_end_in_part - t_start_in_part
-
             if duration_needed <= 0.01: continue
-            
-            # ОПТИМИЗАЦИЯ ПЕРЕМОТКИ:
-            # Мы прыгаем к (absolute_start_source - 10 секунд). 
-            # Это буфер безопасности, чтобы попасть на Keyframe (ключевой кадр).
-            seek_buffer = 10.0
+
+            # seek_buffer: отступаем назад, чтобы попасть на keyframe для скорости
+            seek_buffer = 5.0
             seek_time = max(0, absolute_start_source - seek_buffer)
             
-            # Добавляем файл во входные параметры с перемоткой
-            # Индекс этого входа будет равен `i`
+            # ВХОД с перемоткой
             ffmpeg_inputs.extend(['-ss', f"{seek_time:.4f}", '-i', part['source_file']])
             
-            # Корректируем trim внутри фильтра.
-            # Так как мы перемотали файл на `seek_time`, время внутри фильтра начинается с 0 относительно точки перемотки.
-            # Нам нужно обрезать "лишний" буфер безопасности.
+            # Корректировка времени для фильтров (относительно точки перемотки)
             trim_start_relative = absolute_start_source - seek_time
             
-            current_v_pad = f"[{i}:v]"
-            
-            # Масштабирование (если нужно)
-            part_res = await get_video_resolution(part['source_file'])
-            if part_res and part_res != target_res:
-                filters.append(f"{current_v_pad}scale={target_res[0]}:{target_res[1]},setsar=1[v{i}_scaled]")
-                current_v_pad = f"[v{i}_scaled]"
+            # 1. SCALE (Ускорение: приводим к 480p по высоте)
+            # scale=-2:480 сохраняет пропорции, ширина делится на 2
+            filters.append(f"[{i}:v]scale=-2:{PREVIEW_HEIGHT},setsar=1[v{i}_scaled]")
 
-            # Фильтры обрезки (trim)
-            # trim=start=... берет время относительно НАЧАЛА ВХОДА (а вход у нас уже перемотан)
+            # 2. TRIM
             filters.extend([
-                f"{current_v_pad}trim=start={trim_start_relative:.4f}:duration={duration_needed:.4f},setpts=PTS-STARTPTS[v{i}_trimmed]",
+                f"[v{i}_scaled]trim=start={trim_start_relative:.4f}:duration={duration_needed:.4f},setpts=PTS-STARTPTS[v{i}_trimmed]",
                 f"[{i}:a]atrim=start={trim_start_relative:.4f}:duration={duration_needed:.4f},asetpts=PTS-STARTPTS[a{i}_trimmed]"
             ])
             
             vf, af = f"[v{i}_trimmed]null[v{i}_faded]", f"[a{i}_trimmed]anull[a{i}_faded]"
 
-            # Обработка FADE IN/OUT (если это края сегментов)
-            if part['id'].startswith('segment'):
-                # Если это самое начало видео-сегмента (независимо от того, какой сейчас кадр превью)
-                if t_start_in_part < 0.01:
+            # 3. FADE LOGIC (Исправлено)
+            # Эффект должен быть только у segment1 в самом начале его воспроизведения (сразу после интро)
+            if part['id'] == 'segment1':
+                # Проверяем, смотрим ли мы начало файла (t_start_in_part близко к 0)
+                if t_start_in_part < 0.1:
+                    # fade=in:st=0 означает "с 0 секунды этого стрима".
+                    # Поскольку стрим обрезан trim'ом прямо по границе просмотра, 0 - это то, что видит юзер.
                     vf = f"[v{i}_trimmed]fade=in:st=0:d={FADE_DURATION}:alpha=1[v{i}_faded]"
                     af = f"[a{i}_trimmed]afade=t=in:st=0:d={FADE_DURATION}[a{i}_faded]"
                 
-                # Если это конец видео-сегмента
+                # Fade Out (в конце видео)
                 if abs((t_start_in_part + duration_needed) - part['duration']) < 0.1 and duration_needed > FADE_DURATION:
-                    # Fade out должен начинаться за 1 сек до конца этого куска
                     fade_out_start = duration_needed - FADE_DURATION
                     vf = f"[v{i}_trimmed]fade=out:st={fade_out_start:.4f}:d={FADE_DURATION}:alpha=1[v{i}_faded]"
                     af = f"[a{i}_trimmed]afade=t=out:st={fade_out_start:.4f}:d={FADE_DURATION}[a{i}_faded]"
@@ -203,13 +174,14 @@ async def handle_preview_fragment(websocket, params, request_start_time: float):
         if not video_pads: return
 
         filters.extend([f"{''.join(video_pads)}concat=n={len(video_pads)}:v=1:a=0[v_out]", f"{''.join(audio_pads)}concat=n={len(audio_pads)}:v=0:a=1[a_out]"])
-        filter_complex = ";".join(filters)
-
-        cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-stats'] + ffmpeg_inputs + ['-filter_complex', filter_complex, '-map', '[v_out]', '-map', '[a_out]', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '30', '-threads', '0', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', fragment_path, '-y']
         
-        print(f"\n--- FFmpeg Preview Command ---\n{' '.join(cmd)}\n----------------------------\n")
+        # ОПТИМИЗАЦИЯ КОДИРОВАНИЯ: crf 35 (качество ниже, скорость выше)
+        cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-stats'] + ffmpeg_inputs + \
+              ['-filter_complex', ";".join(filters), 
+               '-map', '[v_out]', '-map', '[a_out]', 
+               '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '35', '-threads', '0', 
+               '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', fragment_path, '-y']
         
-        # Обновленный лог с диапазоном времени
         log_title = f"Рендер фрагмента ({seconds_to_hms(frag_start)} - {seconds_to_hms(frag_end)})"
         await run_async_command(websocket, cmd, log_title)
         
@@ -218,10 +190,8 @@ async def handle_preview_fragment(websocket, params, request_start_time: float):
             await websocket.send(json.dumps({"action": "preview_fragment_ready", "start_time": request_start_time, "duration": actual_duration, "relative_path": fragment_path}))
     except Exception as e:
         import traceback
-        await send_log(websocket, f"Ошибка предпросмотра: {str(e)}\n{traceback.format_exc()}")
+        await send_log(websocket, f"Ошибка предпросмотра: {str(e)}")
         if os.path.exists(fragment_path): os.remove(fragment_path)
-        await websocket.send(json.dumps({"action": "error", "message": "Ошибка генерации предпросмотра"}))
-
 
 # --- ПОСТРОЕНИЕ КАРТЫ И ОБРАБОТКА ---
 
