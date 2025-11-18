@@ -2,37 +2,121 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Видео Редактор v26.4 (Fast UX)</title>
+    <title>Видео Редактор v26.6 (Bright Blue)</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
     <style>
-        .modal-backdrop{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);display:flex;justify-content:center;align-items:center;z-index:1000} .modal-content{background:#282a36;padding:20px;border-radius:8px;width:90%;max-width:600px;border:1px solid #6272a4} #file-list{height:350px;overflow-y:auto;background:#21222c;padding:5px;margin-bottom:10px;border:1px solid #44475a} .file-entry{cursor:pointer;padding:5px 8px;border-radius:3px} .file-entry:hover{background:#44475a} .file-entry.dir::before{content:'📁 '} .file-entry.file::before{content:'📄 '} .hidden{display:none} #path-container{display:flex;align-items:center;margin-bottom:10px} #current-path{flex-grow:1;padding:5px;background:#21222c;color:#f8f8f2;border:1px solid #44475a} #up-btn{background:#6272a4;color:#f8f8f2;border:none;padding:5px 10px;margin-left:5px;cursor:pointer} #up-btn:hover{background:#bd93f9} .modal-buttons{display:flex;justify-content:flex-end;gap:10px}
-        .video-container { position: relative; width: 100%; background: black; border: 1px solid var(--panel-bg); min-height: 300px; display: flex; align-items: center; justify-content: center; }
-        .video-container video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        .video-container .inactive-player { visibility: hidden; }
-        /* Новый стиль для лоадера */
+        /* KDE Breeze Dark Inspired Variables + Bright Pop */
+        :root { 
+            --main-bg: #232629; 
+            --main-fg: #eff0f1; 
+            --panel-bg: #31363b; 
+            --border-color: #616569; 
+            --accent-primary: #00bbff; /* BRIGHTER Electric Blue */
+            --accent-hover: #5ce4ff; 
+            --accent-secondary: #007acc;
+            --log-bg: #1b1e20;
+            --highlight: #00bbff;
+        }
+
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--main-bg); color: var(--main-fg); max-width: 1200px; margin: 2em auto; padding: 1em; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; }
+        .form-column { flex: 1; min-width: 400px; } 
+        .preview-column { flex: 2; min-width: 400px; }
+        
+        h1, h2 { color: var(--accent-primary); border-bottom: 2px solid var(--panel-bg); margin-bottom: 15px; font-weight: normal; text-shadow: 0 0 5px rgba(0, 187, 255, 0.2); }
+        
+        input[type="text"] { flex-grow: 1; padding: 8px; background: var(--log-bg); color: var(--main-fg); border: 1px solid var(--border-color); border-radius: 2px; box-sizing: border-box; }
+        input[type="text"]:focus { border-color: var(--accent-primary); outline: none; box-shadow: 0 0 3px var(--accent-primary); }
+
+        button { background-color: var(--panel-bg); color: var(--main-fg); border: 1px solid var(--border-color); padding: 8px; border-radius: 2px; cursor: pointer; transition: all 0.2s; width: 100%; margin-bottom: 10px; }
+        button:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+        
+        button.action-btn { background: linear-gradient(135deg, var(--accent-secondary), var(--accent-primary)); color: white; padding: 15px; font-size: 1.1em; border: none; font-weight: bold; }
+        button.action-btn:hover { filter: brightness(1.2); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(1); }
+
+        .jump-btn { background: var(--panel-bg); width: 40px; height: 36px; font-size: 1.2em; padding: 0; margin-left: 5px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+        .jump-btn:hover { background: var(--accent-primary); color: #1b1e20; }
+
+        label { color: #a4a4a4; } 
+        legend { color: var(--accent-primary); font-weight: bold; }
+        fieldset { border: 1px solid var(--border-color); margin-bottom: 15px; background: #2a2e32; padding: 15px; border-radius: 4px;}
+
+        #log-output { background: var(--log-bg); border: 1px solid var(--border-color); height: 400px; overflow-y: scroll; white-space: pre-wrap; font-family: 'Consolas', monospace; color: #ccc; padding: 10px; font-size: 0.9em; }
+
+        .hidden { display: none !important; }
+        .time-input-group { display: flex; align-items: center; margin-bottom: 10px; }
+        .file-path-display { padding: 8px; background: var(--log-bg); border-radius: 2px; min-height: 1.2em; word-break: break-all; margin-top: 5px; margin-bottom: 10px; font-size: 0.85em; color: #888; border: 1px dashed var(--border-color); }
+
+        /* Modal */
+        .modal-backdrop{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);display:flex;justify-content:center;align-items:center;z-index:1000} 
+        .modal-content{background:var(--panel-bg);padding:20px;border-radius:4px;width:90%;max-width:600px;border:1px solid var(--accent-primary); box-shadow: 0 0 20px rgba(0, 187, 255, 0.15); } 
+        #file-list{height:350px;overflow-y:auto;background:var(--log-bg);padding:5px;margin-bottom:10px;border:1px solid var(--border-color)} 
+        .file-entry{cursor:pointer;padding:6px 8px;border-radius:2px; color: var(--main-fg);} 
+        .file-entry:hover{background:rgba(0, 187, 255, 0.15); color: var(--accent-primary);} 
+        .file-entry.dir::before{content:'📁 '; color: var(--accent-primary);} 
+        .file-entry.file::before{content:'📄 '; opacity: 0.7;} 
+        #path-container{display:flex;align-items:center;margin-bottom:10px} 
+        #up-btn{width: auto; margin: 0 0 0 5px;} 
+        .modal-buttons{display:flex;justify-content:flex-end;gap:10px}
+
+        /* --- FIX: Video Player Full Width --- */
+        .video-container { 
+            position: relative; 
+            width: 100%; 
+            /* Убрали min-height и flex center, чтобы контейнер схлопывался точно по видео */
+            background: black; 
+            border: 1px solid var(--border-color); 
+            line-height: 0; /* Убираем отступы снизу inline-элементов */
+        }
+        .video-container video { 
+            position: relative; /* Возвращаем в поток документа */
+            width: 100%; 
+            height: auto; /* Высота авто - пропорции сохраняются, ширина 100% */
+            display: block;
+        }
+        /* Скрываем неактивный плеер полностью, чтобы он не занимал место */
+        .video-container .inactive-player { 
+            display: none !important; 
+        }
+        
         #loading-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.6); color: var(--accent-green);
-            display: flex; justify-content: center; align-items: center;
-            font-size: 1.5em; font-weight: bold; z-index: 10;
-            display: none; /* Скрыт по умолчанию */
+            background: rgba(0,0,0,0.7); color: var(--accent-primary);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            font-size: 1.2em; font-weight: bold; z-index: 10;
+            display: none;
         }
+        .spinner { border: 4px solid rgba(255,255,255,0.1); border-top: 4px solid var(--accent-primary); border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 10px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .virtual-player-container { background: var(--panel-bg); padding: 15px; border: 1px solid var(--border-color); border-top: none; display: none; }
+        .virtual-player-controls { display: flex; align-items: center; gap: 15px; }
+        
+        #v-play-btn { background: var(--accent-primary); color: #000; width: 40px; height: 40px; font-size: 1.2em; padding: 0; flex-shrink: 0; margin: 0; border: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(0, 187, 255, 0.4);}
+        #v-play-btn:hover { background: var(--accent-hover); transform: scale(1.05); }
+
+        #v-time-display { font-family: 'Consolas', monospace; font-size: 1.1em; color: var(--main-fg); min-width: 160px; text-align: center;}
+
+        #v-progress-bar { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; background: var(--log-bg); border-radius: 3px; outline: none; cursor: pointer; }
+        #v-progress-bar::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; background: var(--accent-primary); border-radius: 50%; cursor: pointer; transition: transform 0.1s; box-shadow: 0 0 10px rgba(0, 187, 255, 0.6); }
+        #v-progress-bar::-webkit-slider-thumb:hover { transform: scale(1.3); }
     </style>
 </head>
 <body>
-    <h1>Видео Редактор v26.4 (Fast UX)</h1>
+    <h1>Видео Редактор v26.6 (Bright Blue)</h1>
     <div class="container">
         <div class="form-column">
-            <fieldset><legend>1. Настройки</legend><label>Режим Работы:</label><div><input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()"><label for="singleFile">Один файл</label><input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()"><label for="twoFiles">Два файла</label></div><div id="single_segment_toggle_div" style="margin-top:10px;"><input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()"><label for="is_single_segment">Обработать как единый ролик</label></div><div style="margin-top:15px;"><input type="checkbox" id="use_ram" checked><label for="use_ram">Использовать RAM-диск</label></div><div style="margin-top:15px;"><label>Разрешение интро:</label><div><input type="radio" id="intro_fullhd" name="intro_resolution" value="fullhd"> <label for="intro_fullhd">FullHD</label><input type="radio" id="intro_2k" name="intro_resolution" value="2k" checked> <label for="intro_2k">2K</label></div></div><div style="margin-top:15px;"><label>Выходная директория:</label><button type="button" onclick="selectDirectory('output_dir')">Выбрать папку...</button><div id="output_dir_path" class="file-path-display">(По умолчанию)</div></div></fieldset>
-            <fieldset><legend>2. Файлы</legend><button type="button" onclick="selectFile('intro_file')">1. Выбрать интро</button><div id="intro_file_path" class="file-path-display"></div><button type="button" onclick="selectFile('video1')">2. Выбрать Видео 1</button><div id="video1_path" class="file-path-display"></div><div id="video2_container" class="hidden"><button type="button" onclick="selectFile('video2')">3. Выбрать Видео 2</button><div id="video2_path" class="file-path-display"></div></div><button type="button" onclick="selectFile('audio1')">Аудио 1 (опция)...</button><div id="audio1_path" class="file-path-display"></div><div id="audio2_container" class="hidden"><button type="button" onclick="selectFile('audio2')">Аудио 2 (опция)...</button><div id="audio2_path" class="file-path-display"></div></div></fieldset>
-            <fieldset><legend>3. Таймкоды</legend><h4>Сегмент 1</h4><div class="time-input-group"><label for="start1" style="width:60px;">Начало:</label> <input type="text" id="start1" placeholder="00:01:10"><button class="jump-btn" onclick="jumpToTime('start1')">▶</button></div><div class="time-input-group"><label for="end1" style="width:60px;">Конец:</label> <input type="text" id="end1" placeholder="00:45:30"><button class="jump-btn" onclick="jumpToTime('end1')">▶</button></div><div id="part2_timecodes"><hr style="border-color: var(--panel-bg);"><h4>Сегмент 2</h4><div class="time-input-group"><label for="start2" style="width:60px;">Начало:</label> <input type="text" id="start2" placeholder="00:00:15"><button class="jump-btn" onclick="jumpToTime('start2')">▶</button></div><div class="time-input-group"><label for="end2" style="width:60px;">Конец:</label> <input type="text" id="end2" placeholder="00:30:00"><button class="jump-btn" onclick="jumpToTime('end2')">▶</button></div></div></fieldset>
+            <fieldset><legend>1. Настройки</legend><label>Режим Работы:</label><div><input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()"><label for="singleFile">Один файл</label><input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()"><label for="twoFiles">Два файла</label></div><div id="single_segment_toggle_div" style="margin-top:10px;"><input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()"><label for="is_single_segment">Обработать как единый ролик</label></div><div style="margin-top:15px;"><input type="checkbox" id="use_ram" checked><label for="use_ram">Использовать RAM-диск (/dev/shm)</label></div><div style="margin-top:15px;"><label>Разрешение интро:</label><div><input type="radio" id="intro_fullhd" name="intro_resolution" value="fullhd"> <label for="intro_fullhd">FullHD</label><input type="radio" id="intro_2k" name="intro_resolution" value="2k" checked> <label for="intro_2k">2K</label></div></div><div style="margin-top:15px;"><label>Выходная директория:</label><button type="button" onclick="selectDirectory('output_dir')">Выбрать папку...</button><div id="output_dir_path" class="file-path-display">(По умолчанию)</div></div></fieldset>
+            <fieldset><legend>2. Файлы</legend><button type="button" onclick="selectFile('intro_file')">1. Выбрать интро (опция)</button><div id="intro_file_path" class="file-path-display"></div><button type="button" onclick="selectFile('video1')">2. Выбрать Видео 1</button><div id="video1_path" class="file-path-display"></div><div id="video2_container" class="hidden"><button type="button" onclick="selectFile('video2')">3. Выбрать Видео 2</button><div id="video2_path" class="file-path-display"></div></div><button type="button" onclick="selectFile('audio1')">Аудио 1 (опция)...</button><div id="audio1_path" class="file-path-display"></div><div id="audio2_container" class="hidden"><button type="button" onclick="selectFile('audio2')">Аудио 2 (опция)...</button><div id="audio2_path" class="file-path-display"></div></div></fieldset>
+            <fieldset><legend>3. Таймкоды</legend><h4>Сегмент 1</h4><div class="time-input-group"><label for="start1" style="width:60px;">Начало:</label> <input type="text" id="start1" placeholder="00:01:10"><button class="jump-btn" onclick="jumpToTime('start1')">▶</button></div><div class="time-input-group"><label for="end1" style="width:60px;">Конец:</label> <input type="text" id="end1" placeholder="00:45:30"><button class="jump-btn" onclick="jumpToTime('end1')">▶</button></div><div id="part2_timecodes"><hr style="border-color: var(--border-color); opacity: 0.3;"><h4>Сегмент 2</h4><div class="time-input-group"><label for="start2" style="width:60px;">Начало:</label> <input type="text" id="start2" placeholder="00:00:15"><button class="jump-btn" onclick="jumpToTime('start2')">▶</button></div><div class="time-input-group"><label for="end2" style="width:60px;">Конец:</label> <input type="text" id="end2" placeholder="00:30:00"><button class="jump-btn" onclick="jumpToTime('end2')">▶</button></div></div></fieldset>
             <button type="button" id="submitBtn" class="action-btn" onclick="submitForm()">Начать Обработку</button>
         </div>
         <div class="preview-column">
             <h2>Предпросмотр</h2>
             <div id="video-container" class="video-container">
-                <div id="loading-overlay">Загрузка...</div>
+                <div id="loading-overlay"><div class="spinner"></div>Загрузка...</div>
                 <video id="videoPlayerA" playsinline preload="auto"></video>
                 <video id="videoPlayerB" class="inactive-player" playsinline preload="auto"></video>
             </div>
@@ -47,7 +131,7 @@
             <pre id="log-output">Ожидание подключения...</pre>
         </div>
     </div>
-    <div id="file-modal" class="modal-backdrop hidden"><div class="modal-content"><h3>Выбор файла</h3><div id="path-container"><input id="current-path" type="text" value="/"><button id="up-btn" title="Вверх">↑</button></div><div id="file-list">(пусто)</div><div class="modal-buttons"><button id="close-btn">Закрыть</button><button id="select-dir-btn" class="hidden" style="background: var(--accent-green);">Выбрать папку</button></div></div></div>
+    <div id="file-modal" class="modal-backdrop hidden"><div class="modal-content"><h3>Выбор файла</h3><div id="path-container"><input id="current-path" type="text" value="/"><button id="up-btn" title="Вверх">↑</button></div><div id="file-list">(пусто)</div><div class="modal-buttons"><button id="close-btn">Закрыть</button><button id="select-dir-btn" class="hidden" style="background: var(--accent-secondary); color: white; border: none;">Выбрать папку</button></div></div></div>
     
     <script>
         const SERVER_PORT = "%%SERVER_PORT%%";
@@ -61,13 +145,13 @@
 
         let currentFragment = { start: -1, duration: 0 };
         let totalFinalDuration = 0;
-        let virtualPlayerState = { isPlaying: false, currentTime: 0, isSeeking: false };
+        let virtualPlayerState = { isPlaying: false, currentTime: 0, isSeeking: false, isWaitingForFragment: false };
         let lastProcessingParams = {};
         let activePlayer, hiddenPlayer;
         let lastRequestedTime = -1;
         let lastPreloadTime = -1;
 
-        function logDebug(message, ...args) { console.log(`[PLAYER DEBUG] ${message}`, ...args); }
+        function logDebug(message, ...args) { console.log(`[PLAYER] ${message}`, ...args); }
         function showLoading(show) { document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none'; }
         
         function swapPlayers() { 
@@ -83,7 +167,6 @@
         function jumpToTime(id) {
             const input = document.getElementById(id); const time = hmsToSeconds(input.value);
             if (filePaths.video1) {
-                // Эмулируем перемотку через ползунок для единообразия
                 virtualPlayerState.currentTime = time;
                 updateTimeDisplay();
                 document.getElementById('v-progress-bar').value = time;
@@ -107,10 +190,9 @@
             } else {
                 lastRequestedTime = roundedStart;
                 lastPreloadTime = -1;
-                hiddenPlayer.src = ''; // Очищаем буфер
-                showLoading(true); // Показываем "Загрузка"
+                hiddenPlayer.src = '';
+                showLoading(true);
             }
-            
             ws.send(JSON.stringify({ action: "generate_preview_fragment", start_time: roundedStart, params: lastProcessingParams }));
         }
 
@@ -119,19 +201,28 @@
             const url = `http://127.0.0.1:${SERVER_PORT}/video?path=${encodeURIComponent(data.relative_path)}`;
             
             if (lastRequestedTime === receivedTime) {
-                showLoading(false); // Скрываем лоадер
+                showLoading(false);
+                
+                // Снимаем блокировку ползунка - новое видео готово
+                virtualPlayerState.isWaitingForFragment = false;
+
                 currentFragment = { start: data.start_time, duration: data.duration };
                 activePlayer.src = url;
                 const seekTo = Math.max(0, virtualPlayerState.currentTime - data.start_time);
                 
-                activePlayer.onloadedmetadata = () => {
-                   activePlayer.currentTime = seekTo;
-                   if (virtualPlayerState.isPlaying) activePlayer.play().catch(console.error);
+                const playIfEnabled = () => {
+                    if (virtualPlayerState.isPlaying) activePlayer.play().catch(console.error);
                 };
-                // Fallback если метаданные уже загружены
+
                 if(activePlayer.readyState >= 1) {
                     activePlayer.currentTime = seekTo;
-                    if (virtualPlayerState.isPlaying) activePlayer.play().catch(console.error);
+                    playIfEnabled();
+                } else {
+                    activePlayer.onloadedmetadata = () => {
+                        activePlayer.currentTime = seekTo;
+                        playIfEnabled();
+                        activePlayer.onloadedmetadata = null;
+                    };
                 }
 
             } else if (lastPreloadTime === receivedTime) {
@@ -142,7 +233,6 @@
         function onPreviewMapReady(data) {
             totalFinalDuration = data.total_duration;
             document.getElementById('v-progress-bar').max = totalFinalDuration;
-            // Сбрасываем плеер в начало при новой карте
             if(currentFragment.start === -1) {
                 virtualPlayerState.currentTime = 0;
                 updateTimeDisplay();
@@ -186,6 +276,7 @@
                     case 'error': 
                         logOutput.textContent += `\nОШИБКА: ${data.message}\n`; 
                         showLoading(false);
+                        virtualPlayerState.isWaitingForFragment = false; // Сброс блокировки при ошибке
                         break; 
                     case 'preview_map_ready': onPreviewMapReady(data); break; 
                     case 'preview_fragment_ready': onPreviewFragmentReady(data); break; 
@@ -204,11 +295,12 @@
 
         function handleSeek(time) {
             virtualPlayerState.isSeeking = false;
+            virtualPlayerState.isWaitingForFragment = true;
             virtualPlayerState.currentTime = time;
+            document.getElementById('v-progress-bar').value = time; 
             
             activePlayer.pause();
             hiddenPlayer.pause();
-            
             lastRequestedTime = -1;
             lastPreloadTime = -1;
             
@@ -221,17 +313,19 @@
             const vPlayBtn = document.getElementById('v-play-btn'); const vProgressBar = document.getElementById('v-progress-bar');
             
             [activePlayer, hiddenPlayer].forEach(p => {
+                // Удалили обработчик loadedmetadata с ручным расчетом высоты
+                
                 p.addEventListener('timeupdate', () => {
-                    if (p !== activePlayer || virtualPlayerState.isSeeking) return;
+                    if (p !== activePlayer || virtualPlayerState.isSeeking || virtualPlayerState.isWaitingForFragment) return;
                     virtualPlayerState.currentTime = currentFragment.start + p.currentTime;
                     document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(totalFinalDuration)}`;
                     vProgressBar.value = virtualPlayerState.currentTime;
-                    
                     if (p.duration > 0 && p.duration - p.currentTime < PRELOAD_SECONDS) {
                         const nextStart = currentFragment.start + FRAGMENT_DURATION;
                         if (nextStart < totalFinalDuration) { requestPreviewFragment(nextStart, true); }
                     }
                 });
+
                 p.addEventListener('ended', () => {
                     if (p !== activePlayer || !virtualPlayerState.isPlaying) return;
                     const nextFragmentStart = currentFragment.start + FRAGMENT_DURATION;

@@ -103,7 +103,7 @@ async def get_video_resolution(file_path) -> Optional[Tuple[int, int]]:
         return None
     except Exception: return None
 
-# --- ЛОГИКА ПРЕДПРОСМОТРА (ИСПРАВЛЕНА) ---
+# --- ЛОГИКА ПРЕДПРОСМОТРА ---
 
 async def handle_preview_fragment(websocket, params, request_start_time: float):
     use_ram = params.get('use_ram', True) and os.path.exists('/dev/shm')
@@ -152,16 +152,11 @@ async def handle_preview_fragment(websocket, params, request_start_time: float):
             vf, af = f"[v{i}_trimmed]null[v{i}_faded]", f"[a{i}_trimmed]anull[a{i}_faded]"
 
             # 3. FADE LOGIC (Исправлено)
-            # Эффект должен быть только у segment1 в самом начале его воспроизведения (сразу после интро)
             if part['id'] == 'segment1':
-                # Проверяем, смотрим ли мы начало файла (t_start_in_part близко к 0)
                 if t_start_in_part < 0.1:
-                    # fade=in:st=0 означает "с 0 секунды этого стрима".
-                    # Поскольку стрим обрезан trim'ом прямо по границе просмотра, 0 - это то, что видит юзер.
                     vf = f"[v{i}_trimmed]fade=in:st=0:d={FADE_DURATION}:alpha=1[v{i}_faded]"
                     af = f"[a{i}_trimmed]afade=t=in:st=0:d={FADE_DURATION}[a{i}_faded]"
                 
-                # Fade Out (в конце видео)
                 if abs((t_start_in_part + duration_needed) - part['duration']) < 0.1 and duration_needed > FADE_DURATION:
                     fade_out_start = duration_needed - FADE_DURATION
                     vf = f"[v{i}_trimmed]fade=out:st={fade_out_start:.4f}:d={FADE_DURATION}:alpha=1[v{i}_faded]"
@@ -175,7 +170,7 @@ async def handle_preview_fragment(websocket, params, request_start_time: float):
 
         filters.extend([f"{''.join(video_pads)}concat=n={len(video_pads)}:v=1:a=0[v_out]", f"{''.join(audio_pads)}concat=n={len(audio_pads)}:v=0:a=1[a_out]"])
         
-        # ОПТИМИЗАЦИЯ КОДИРОВАНИЯ: crf 35 (качество ниже, скорость выше)
+        # ОПТИМИЗАЦИЯ КОДИРОВАНИЯ: crf 35
         cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-stats'] + ffmpeg_inputs + \
               ['-filter_complex', ";".join(filters), 
                '-map', '[v_out]', '-map', '[a_out]', 
@@ -244,28 +239,20 @@ async def handle_preview_generation(websocket, params):
         await send_log(websocket, f"ОШИБКА генерации карты предпросмотра: {e}")
         await websocket.send(json.dumps({"action": "error", "message": str(e)}))
 
-# Заглушка для handle_processing (оставил пустой, так как в оригинале она была свернута)
-
 async def handle_processing(websocket, params):
     """Главная функция, управляющая процессом обработки видео."""
     temp_files_to_clean = []
     try:
         intro_resolution = params.get('intro_resolution', '2k')
-        
-        # Проверяем интро в домашней директории в первую очередь
         target_intro_path = os.path.join(HOME_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv")
-        
-        # Если интро не найдено в домашней директории, проверяем стандартное расположение
         if not os.path.exists(target_intro_path):
             target_intro_path = os.path.realpath(os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv"))
 
         if not os.path.exists(target_intro_path):
             await send_log(websocket, f"Целевой файл интро ({os.path.basename(target_intro_path)}) не найден. Поиск источника...")
-            
-            source_intro = params.get('intro_file') # Приоритет №1: Явно указанный файл
+            source_intro = params.get('intro_file')
             if not source_intro:
                 await send_log(websocket, "Исходник не выбран, поиск стандартных файлов...")
-                # Приоритет №2: Поиск стандартных файлов
                 fallback_paths = [
                     os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}.mkv"),
                     os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}.mp4")
@@ -277,17 +264,13 @@ async def handle_processing(websocket, params):
 
             await send_log(websocket, f"Используем '{os.path.basename(source_intro)}' для создания интро.")
             scale = "scale=1920:1080" if intro_resolution == 'fullhd' else "scale=2560:1440"
-            
-            # Создаем интро в домашней директории
             target_intro_path = os.path.join(HOME_DIR, f"{INTRO_BASE_NAME}_{intro_resolution}.mkv")
             await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel','error','-i',source_intro,'-vf',scale,'-c:v',VIDEO_ENCODER,'-preset','medium','-c:a','copy',target_intro_path,'-y'], f"Создание интро {intro_resolution}")
         
-        intro_path = target_intro_path # Теперь мы гарантированно используем правильный путь
-
+        intro_path = target_intro_path
         tmp_dir = "/dev/shm" if params.get('use_ram') and os.path.exists('/dev/shm') else '.'
         await send_log(websocket, "--- Этап 1: Подготовка данных ---")
         
-        # Определение сегментов для обработки
         is_single_segment = params.get('is_single_segment') and params.get('mode') == 'single'
         segments = []
         if not params.get('video1'): raise ValueError("Не указан Видеофайл 1.")
@@ -300,11 +283,9 @@ async def handle_processing(websocket, params):
         if not is_single_segment:
             video2_path = params['video1'] if params['mode'] == 'single' else params.get('video2')
             if not video2_path: raise ValueError("Не указан Видеофайл 2 для режима двух файлов.")
-            
             audio2_source = params.get('audio2') or video2_path
             if params['mode'] == 'single' and not params.get('audio2'):
                 audio2_source = params.get('audio1') or video2_path
-
             segments.append({
                 'video_orig': video2_path, 'audio_orig': audio2_source,
                 'start': hms_to_seconds(params['start2']), 'end': hms_to_seconds(params['end2'])
@@ -315,10 +296,8 @@ async def handle_processing(websocket, params):
         audio_concat_inputs = "[1:a]"
         ffmpeg_audio_inputs = ['-i', intro_path]
 
-        # Обработка каждого сегмента
         for i, seg in enumerate(segments):
             await send_log(websocket, f"\n--- Обработка сегмента {i+1} ---")
-            
             cache_file = f"{seg['video_orig']}.keyframes.txt"
             if not os.path.exists(cache_file):
                 await send_log(websocket, f"Анализ I-кадров для {os.path.basename(seg['video_orig'])}...")
@@ -336,12 +315,10 @@ async def handle_processing(websocket, params):
             fade_out_path = os.path.join(tmp_dir, f"part{i+1}_fade_out.mkv"); temp_files_to_clean.append(fade_out_path)
             
             await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel', 'error','-stats','-ss', str(seg['start']), '-to', str(seg['start_split']), '-i', seg['video_orig'], '-an', '-vf', f"fade=in:st=0:d={FADE_DURATION},setpts=PTS-STARTPTS", '-c:v', VIDEO_ENCODER, '-preset', 'ultrafast', fade_in_path, '-y'], "Создание fade-in")
-            
             fout_rel_start = seg['end'] - seg['end_split'] - FADE_DURATION
             await run_async_command(websocket, ['ffmpeg','-hide_banner','-loglevel', 'error','-stats','-ss', str(seg['end_split']), '-to', str(seg['end']), '-i', seg['video_orig'], '-an', '-vf', f"fade=out:st={fout_rel_start:.4f}:d={FADE_DURATION},setpts=PTS-STARTPTS", '-c:v', VIDEO_ENCODER, '-preset', 'ultrafast', fade_out_path, '-y'], "Создание fade-out")
 
             video_concat_parts.extend([f"file '{fade_in_path}'", f"file '{seg['video_orig']}'\ninpoint {seg['start_split']}\noutpoint {seg['end_split']}", f"file '{fade_out_path}'"])
-            
             ain_idx = 1 + 1 + i
             ffmpeg_audio_inputs.extend(['-i', seg['audio_orig']])
             audio_filter_definitions.extend([
@@ -352,7 +329,6 @@ async def handle_processing(websocket, params):
             ])
             audio_concat_inputs += f"[aud{i}fi][aud{i}mb][aud{i}fo]"
 
-        # Финальная сборка
         await send_log(websocket, "\n--- Этап 3: Финальная сборка ---")
         concat_path = os.path.join(tmp_dir, "concat.txt"); temp_files_to_clean.append(concat_path)
         with open(concat_path, 'w', encoding='utf-8') as f: f.write("\n".join(video_concat_parts))
@@ -363,12 +339,8 @@ async def handle_processing(websocket, params):
         
         base_name, _ = os.path.splitext(os.path.basename(segments[0]['video_orig']))
         output_name = f"{params.get('intro_resolution', '2k')}_{base_name}_final_edit.mkv"
-
-        # Используем выбранную директорию, если она есть, иначе - дефолтную выходную директорию
         output_dir = params.get('output_dir') or "BROWSE_ROOT_OUTPUT"
-        if not os.path.isdir(output_dir):
-            raise ValueError(f"Выходная директория не существует: {output_dir}")
-
+        if not os.path.isdir(output_dir): raise ValueError(f"Выходная директория не существует: {output_dir}")
         output_path = os.path.join(output_dir, output_name)
 
         final_cmd = ['ffmpeg','-hide_banner','-loglevel','error',  '-stats','-f','concat','-safe','0','-i', concat_path] + ffmpeg_audio_inputs + ['-filter_complex', filter_complex, '-map','0:v','-map','[fa]', '-c:v','copy','-r','60', '-c:a', FINAL_AUDIO_CODEC, '-movflags', '+faststart', output_path,'-y']
@@ -386,8 +358,6 @@ async def handle_processing(websocket, params):
                 try: os.remove(f); await send_log(websocket, f"Удалено: {f}")
                 except OSError as e: await send_log(websocket, f"Не удалось удалить {f}: {e}")
         await websocket.send(json.dumps({"action": "finished"}))
-
-# --- HTTP & WEBSOCKET HANDLERS ---
 
 async def handle_video_request(path, request_headers):
     query = parse_qs(urlparse(path).query)
