@@ -2,123 +2,134 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Видео Редактор v21 (Автономный)</title>
+    <title>Видео Редактор v27 (Config + Volume)</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
     <style>
-        .modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-        .modal-content { background: #282a36; padding: 20px; border-radius: 8px; width: 90%; max-width: 600px; border: 1px solid #6272a4; }
-        #file-list { height: 350px; overflow-y: auto; background: #21222c; padding: 5px; margin-bottom: 10px; border: 1px solid #44475a; }
-        .file-entry { cursor: pointer; padding: 5px 8px; border-radius: 3px; }
-        .file-entry:hover { background: #44475a; }
-        .file-entry.dir::before { content: '📁 '; } .file-entry.file::before { content: '📄 '; }
-        .hidden { display: none; }
-        #path-container { display: flex; align-items: center; margin-bottom: 10px; }
-        #current-path { flex-grow: 1; padding: 5px; background: #21222c; color: #f8f8f2; border: 1px solid #44475a; }
-        #up-btn { background: #6272a4; color: #f8f8f2; border: none; padding: 5px 10px; margin-left: 5px; cursor: pointer; }
-        #up-btn:hover { background: #bd93f9; }
-        .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; }
-        .virtual-player-container {
-            background: var(--log-bg);
-            padding: 10px;
-            border: 1px solid var(--panel-bg);
-            border-bottom: none;
-            display: none; /* Изначально скрыт */
+        /* KDE Breeze Dark Inspired Variables + Bright Pop */
+        :root { 
+            --main-bg: #232629; 
+            --main-fg: #eff0f1; 
+            --panel-bg: #31363b; 
+            --border-color: #616569; 
+            --accent-primary: #00bbff; 
+            --accent-hover: #5ce4ff; 
+            --accent-secondary: #007acc;
+            --log-bg: #1b1e20;
+            --highlight: #00bbff;
         }
-        .virtual-player-controls {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        #v-play-btn {
-            background: var(--accent-purple);
-            width: 40px;
-            height: 40px;
-            font-size: 1.5em;
-            padding: 0;
-            flex-shrink: 0;
-            margin: 0;
-        }
-        #v-time-display {
-            font-family: monospace;
-            font-size: 1.1em;
-            color: var(--accent-green);
-            min-width: 180px;
-        }
-        #v-progress-bar {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 100%;
-            height: 8px;
-            background: var(--panel-bg);
-            outline: none;
-            cursor: pointer;
-        }
-        #v-progress-bar::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            background: var(--accent-green);
-            border-radius: 50%;
-            cursor: pointer;
-        }
+
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--main-bg); color: var(--main-fg); max-width: 1200px; margin: 2em auto; padding: 1em; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; }
+        .form-column { flex: 1; min-width: 400px; } 
+        .preview-column { flex: 2; min-width: 400px; }
+        
+        h1, h2 { color: var(--accent-primary); border-bottom: 2px solid var(--panel-bg); margin-bottom: 15px; font-weight: normal; text-shadow: 0 0 5px rgba(0, 187, 255, 0.2); }
+        
+        input[type="text"], input[type="number"] { flex-grow: 1; padding: 8px; background: var(--log-bg); color: var(--main-fg); border: 1px solid var(--border-color); border-radius: 2px; box-sizing: border-box; }
+        input[type="text"]:focus, input[type="number"]:focus { border-color: var(--accent-primary); outline: none; box-shadow: 0 0 3px var(--accent-primary); }
+
+        button { background-color: var(--panel-bg); color: var(--main-fg); border: 1px solid var(--border-color); padding: 8px; border-radius: 2px; cursor: pointer; transition: all 0.2s; width: 100%; margin-bottom: 10px; }
+        button:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+        
+        button.action-btn { background: linear-gradient(135deg, var(--accent-secondary), var(--accent-primary)); color: white; padding: 15px; font-size: 1.1em; border: none; font-weight: bold; }
+        button.action-btn:hover { filter: brightness(1.2); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(1); }
+
+        .jump-btn { background: var(--panel-bg); width: 40px; height: 36px; font-size: 1.2em; padding: 0; margin-left: 5px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+        .jump-btn:hover { background: var(--accent-primary); color: #1b1e20; }
+
+        label { color: #a4a4a4; } 
+        legend { color: var(--accent-primary); font-weight: bold; }
+        fieldset { border: 1px solid var(--border-color); margin-bottom: 15px; background: #2a2e32; padding: 15px; border-radius: 4px;}
+
+        #log-output { background: var(--log-bg); border: 1px solid var(--border-color); height: 400px; overflow-y: scroll; white-space: pre-wrap; font-family: 'Consolas', monospace; color: #ccc; padding: 10px; font-size: 0.9em; }
+
+        .hidden { display: none !important; }
+        .time-input-group { display: flex; align-items: center; margin-bottom: 10px; }
+        .file-path-display { padding: 8px; background: var(--log-bg); border-radius: 2px; min-height: 1.2em; word-break: break-all; margin-top: 5px; margin-bottom: 10px; font-size: 0.85em; color: #888; border: 1px dashed var(--border-color); }
+
+        /* Modal */
+        .modal-backdrop{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);display:flex;justify-content:center;align-items:center;z-index:1000} 
+        .modal-content{background:var(--panel-bg);padding:20px;border-radius:4px;width:90%;max-width:600px;border:1px solid var(--accent-primary); box-shadow: 0 0 20px rgba(0, 187, 255, 0.15); } 
+        #file-list{height:350px;overflow-y:auto;background:var(--log-bg);padding:5px;margin-bottom:10px;border:1px solid var(--border-color)} 
+        .file-entry{cursor:pointer;padding:6px 8px;border-radius:2px; color: var(--main-fg);} 
+        .file-entry:hover{background:rgba(0, 187, 255, 0.15); color: var(--accent-primary);} 
+        .file-entry.dir::before{content:'📁 '; color: var(--accent-primary);} 
+        .file-entry.file::before{content:'📄 '; opacity: 0.7;} 
+        #path-container{display:flex;align-items:center;margin-bottom:10px} 
+        #up-btn{width: auto; margin: 0 0 0 5px;} 
+        .modal-buttons{display:flex;justify-content:flex-end;gap:10px}
+
+        /* Video Player */
+        .video-container { position: relative; width: 100%; background: black; border: 1px solid var(--border-color); line-height: 0; }
+        .video-container video { position: relative; width: 100%; height: auto; display: block; }
+        .video-container .inactive-player { display: none !important; }
+        
+        #loading-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); color: var(--accent-primary); display: flex; flex-direction: column; justify-content: center; align-items: center; font-size: 1.2em; font-weight: bold; z-index: 10; display: none; }
+        .spinner { border: 4px solid rgba(255,255,255,0.1); border-top: 4px solid var(--accent-primary); border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 10px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .virtual-player-container { background: var(--panel-bg); padding: 15px; border: 1px solid var(--border-color); border-top: none; display: none; }
+        .virtual-player-controls { display: flex; align-items: center; gap: 15px; }
+        
+        #v-play-btn { background: var(--accent-primary); color: #000; width: 40px; height: 40px; font-size: 1.2em; padding: 0; flex-shrink: 0; margin: 0; border: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(0, 187, 255, 0.4);}
+        #v-play-btn:hover { background: var(--accent-hover); transform: scale(1.05); }
+        #v-time-display { font-family: 'Consolas', monospace; font-size: 1.1em; color: var(--main-fg); min-width: 160px; text-align: center;}
+        #v-progress-bar { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; background: var(--log-bg); border-radius: 3px; outline: none; cursor: pointer; }
+        #v-progress-bar::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; background: var(--accent-primary); border-radius: 50%; cursor: pointer; transition: transform 0.1s; box-shadow: 0 0 10px rgba(0, 187, 255, 0.6); }
+        #v-progress-bar::-webkit-slider-thumb:hover { transform: scale(1.3); }
+        
+        /* Volume Control Style */
+        .volume-control { display: flex; align-items: center; gap: 10px; margin-top: 15px; }
+        .volume-control input[type="range"] { flex-grow: 1; accent-color: var(--accent-primary); }
+        .volume-control span { font-family: 'Consolas', monospace; min-width: 40px; text-align: right; color: var(--accent-primary); }
     </style>
 </head>
 <body>
-    <h1>Видео Редактор v21 (Автономный)</h1>
-     <div class="container">
+    <h1>Видео Редактор v27 (Config + Volume)</h1>
+    <div class="container">
         <div class="form-column">
-             <fieldset><legend>1. Настройки</legend>
+            <fieldset><legend>1. Настройки</legend>
                 <label>Режим Работы:</label>
                 <div>
-                    <input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()">
-                    <label for="singleFile" title="Обработать два сегмента из одного и того же видео/аудио файла.">Один файл</label>
-                    <input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()">
-                    <label for="twoFiles" title="Обработать два сегмента из двух разных видео/аудио файлов.">Два файла</label>
+                    <input type="radio" id="singleFile" name="mode" value="single" checked onchange="toggleMode()"><label for="singleFile">Один файл</label>
+                    <input type="radio" id="twoFiles" name="mode" value="two" onchange="toggleMode()"><label for="twoFiles">Два файла</label>
                 </div>
                 <div id="single_segment_toggle_div" style="margin-top:10px;">
-                    <input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()">
-                    <label for="is_single_segment" title="Вырезать один непрерывный кусок из видео, добавив интро и плавные переходы в начале и конце.">Обработать как единый ролик</label>
+                    <input type="checkbox" id="is_single_segment" name="is_single_segment" onchange="toggleMode()"><label for="is_single_segment">Обработать как единый ролик</label>
                 </div>
-                <div style="margin-top:15px;">
-                    <input type="checkbox" id="use_ram" checked>
-                    <label for="use_ram" title="Временные файлы будут созданы в /dev/shm (ОЗУ). Работает только на Linux. Ускоряет процесс, если достаточно ОЗУ.">Использовать RAM-диск</label>
-                </div>
+                <div style="margin-top:15px;"><input type="checkbox" id="use_ram" checked><label for="use_ram">Использовать RAM-диск (/dev/shm)</label></div>
                 <div style="margin-top:15px;">
                     <label>Разрешение интро:</label>
-                    <div>
-                      <input type="radio" id="intro_fullhd" name="intro_resolution" value="fullhd"> <label for="intro_fullhd">FullHD (1080p)</label>
-                      <input type="radio" id="intro_2k" name="intro_resolution" value="2k" checked> <label for="intro_2k">2K (1440p)</label>
-                    </div>
+                    <div><input type="radio" id="intro_fullhd" name="intro_resolution" value="fullhd"> <label for="intro_fullhd">FullHD</label><input type="radio" id="intro_2k" name="intro_resolution" value="2k" checked> <label for="intro_2k">2K</label></div>
                 </div>
+                
+                <!-- NEW: Volume Control -->
+                <div class="volume-control">
+                    <label for="volume_slider" title="Усиление громкости только для основной части видео (не интро)">Громкость видео:</label>
+                    <input type="range" id="volume_slider" min="1.0" max="4.0" step="0.1" value="1.5" oninput="updateVolumeLabel()">
+                    <span id="volume_value">1.5x</span>
+                </div>
+
                 <div style="margin-top:15px;">
-                    <label>Выходная директория (опция):</label>
+                    <label>Выходная директория:</label>
                     <button type="button" onclick="selectDirectory('output_dir')">Выбрать папку...</button>
-                    <div id="output_dir_path" class="file-path-display">(По умолчанию: папка с "Видео 1")</div>
+                    <div id="output_dir_path" class="file-path-display">(По умолчанию)</div>
                 </div>
             </fieldset>
-            <fieldset><legend>2. Файлы</legend>
-                <button type="button" onclick="selectFile('intro_file')">1. Выбрать исходник интро (если нужно)</button><div id="intro_file_path" class="file-path-display"></div>
-                <button type="button" onclick="selectFile('video1')">2. Выбрать Видео 1</button><div id="video1_path" class="file-path-display"></div>
-                <div id="video2_container" class="hidden"><button type="button" onclick="selectFile('video2')">3. Выбрать Видео 2</button><div id="video2_path" class="file-path-display"></div></div>
-                <button type="button" onclick="selectFile('audio1')">Аудио 1 (опция)...</button><div id="audio1_path" class="file-path-display"></div>
-                <div id="audio2_container" class="hidden"><button type="button" onclick="selectFile('audio2')">Аудио 2 (опция)...</button><div id="audio2_path" class="file-path-display"></div></div>
-            </fieldset>
-             <fieldset><legend>3. Таймкоды</legend>
-                <h4>Сегмент 1</h4>
-                <div class="time-input-group"><label for="start1" style="width:60px;">Начало:</label> <input type="text" id="start1" placeholder="00:01:10"><button class="jump-btn" onclick="jumpToTime('start1')">▶</button></div>
-                <div class="time-input-group"><label for="end1" style="width:60px;">Конец:</label> <input type="text" id="end1" placeholder="00:45:30"><button class="jump-btn" onclick="jumpToTime('end1')">▶</button></div>
-                <div id="part2_timecodes"><hr style="border-color: var(--panel-bg);"><h4>Сегмент 2</h4>
-                    <div class="time-input-group"><label for="start2" style="width:60px;">Начало:</label> <input type="text" id="start2" placeholder="00:00:15"><button class="jump-btn" onclick="jumpToTime('start2')">▶</button></div>
-                    <div class="time-input-group"><label for="end2" style="width:60px;">Конец:</label> <input type="text" id="end2" placeholder="00:30:00"><button class="jump-btn" onclick="jumpToTime('end2')">▶</button></div>
-                </div>
-            </fieldset>
+
+            <fieldset><legend>2. Файлы</legend><button type="button" onclick="selectFile('intro_file')">1. Выбрать интро (опция)</button><div id="intro_file_path" class="file-path-display"></div><button type="button" onclick="selectFile('video1')">2. Выбрать Видео 1</button><div id="video1_path" class="file-path-display"></div><div id="video2_container" class="hidden"><button type="button" onclick="selectFile('video2')">3. Выбрать Видео 2</button><div id="video2_path" class="file-path-display"></div></div><button type="button" onclick="selectFile('audio1')">Аудио 1 (опция)...</button><div id="audio1_path" class="file-path-display"></div><div id="audio2_container" class="hidden"><button type="button" onclick="selectFile('audio2')">Аудио 2 (опция)...</button><div id="audio2_path" class="file-path-display"></div></div></fieldset>
+            <fieldset><legend>3. Таймкоды</legend><h4>Сегмент 1</h4><div class="time-input-group"><label for="start1" style="width:60px;">Начало:</label> <input type="text" id="start1" placeholder="00:01:10"><button class="jump-btn" onclick="jumpToTime('start1')">▶</button></div><div class="time-input-group"><label for="end1" style="width:60px;">Конец:</label> <input type="text" id="end1" placeholder="00:45:30"><button class="jump-btn" onclick="jumpToTime('end1')">▶</button></div><div id="part2_timecodes"><hr style="border-color: var(--border-color); opacity: 0.3;"><h4>Сегмент 2</h4><div class="time-input-group"><label for="start2" style="width:60px;">Начало:</label> <input type="text" id="start2" placeholder="00:00:15"><button class="jump-btn" onclick="jumpToTime('start2')">▶</button></div><div class="time-input-group"><label for="end2" style="width:60px;">Конец:</label> <input type="text" id="end2" placeholder="00:30:00"><button class="jump-btn" onclick="jumpToTime('end2')">▶</button></div></div></fieldset>
             <button type="button" id="submitBtn" class="action-btn" onclick="submitForm()">Начать Обработку</button>
         </div>
         <div class="preview-column">
             <h2>Предпросмотр</h2>
-            <video id="videoPreview" controls></video>
+            <div id="video-container" class="video-container">
+                <div id="loading-overlay"><div class="spinner"></div>Загрузка...</div>
+                <video id="videoPlayerA" playsinline preload="auto"></video>
+                <video id="videoPlayerB" class="inactive-player" playsinline preload="auto"></video>
+            </div>
             <div class="virtual-player-container" id="virtual-player">
                 <div class="virtual-player-controls">
                     <button id="v-play-btn">▶</button>
@@ -126,355 +137,287 @@
                     <input type="range" id="v-progress-bar" min="0" max="100" value="0">
                 </div>
             </div>
-            <h2>Лог выполнения</h2><pre id="log-output">Ожидание подключения к серверу...</pre>
+            <h2>Лог выполнения</h2>
+            <pre id="log-output">Ожидание подключения...</pre>
         </div>
     </div>
-    <div id="file-modal" class="modal-backdrop hidden">
-        <div class="modal-content">
-            <h3>Выбор файла</h3>
-            <div id="path-container">
-                <input id="current-path" type="text" value="/">
-                <button id="up-btn" title="Вверх">↑</button>
-            </div>
-            <div id="file-list">(пусто)</div>
-            <div class="modal-buttons">
-                <button id="close-btn">Закрыть</button>
-                <button id="select-dir-btn" class="hidden" style="background: var(--accent-green);">Выбрать папку</button>
-            </div>
-        </div>
-    </div>
+    <div id="file-modal" class="modal-backdrop hidden"><div class="modal-content"><h3>Выбор файла</h3><div id="path-container"><input id="current-path" type="text" value="/"><button id="up-btn" title="Вверх">↑</button></div><div id="file-list">(пусто)</div><div class="modal-buttons"><button id="close-btn">Закрыть</button><button id="select-dir-btn" class="hidden" style="background: var(--accent-secondary); color: white; border: none;">Выбрать папку</button></div></div></div>
+    
     <script>
         const SERVER_PORT = "%%SERVER_PORT%%";
         const logOutput = document.getElementById('log-output');
         let filePaths = { video1: '', video2: '', audio1: '', audio2: '', intro_file: '', output_dir: '' };
         let ws;
         let currentId = '';
-        let virtualPlayerState = { isPlaying: false, currentTime: 0, duration: 0, isSeeking: false };
-        let timelineMap = []; // Для виртуального плеера
 
-        function hmsToSeconds(str) {
-            if (!str) return 0;
-            const p = str.split(':').map(Number);
-            let s = 0;
-            if (p.length === 3) s = p[0] * 3600 + p[1] * 60 + p[2];
-            else if (p.length === 2) s = p[0] * 60 + p[1];
-            else if (p.length === 1 && str) s = parseFloat(str);
-            return isNaN(s) ? 0 : s;
-        }
-        function secondsToHMS(s) {
-            const h = Math.floor(s / 3600);
-            const m = Math.floor((s % 3600) / 60);
-            const sec = Math.floor(s % 60);
-            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
-        }
+        const FRAGMENT_DURATION = 10;
+        const PRELOAD_SECONDS = 5;
 
-        function jumpToTime(id) {
-            const input = document.getElementById(id);
-            const time = hmsToSeconds(input.value);
-            const video = document.getElementById('videoPreview');
-            if (!isNaN(time) && video.duration) {
-                video.currentTime = time;
-                video.play();
-            }
-        }
+        let currentFragment = { start: -1, duration: 0 };
+        let totalFinalDuration = 0;
+        let virtualPlayerState = { isPlaying: false, currentTime: 0, isSeeking: false, isWaitingForFragment: false };
+        let lastProcessingParams = {};
+        let activePlayer, hiddenPlayer;
+        let lastRequestedTime = -1;
+        let lastPreloadTime = -1;
+        let volumeDebounceTimer;
 
-        function connect() {
-            ws = new WebSocket(`ws://127.0.0.1:${SERVER_PORT}`);
-            ws.onopen = () => { 
-                console.log('WS открыт');
-                logOutput.textContent = 'Соединение установлено. Готов к работе.\n'; 
-            };
-            ws.onerror = (err) => { 
-                console.error('WS ошибка:', err);
-                logOutput.textContent += 'Ошибка WS. Проверьте порт.\n'; 
-            };
-            ws.onclose = () => { 
-                console.log('WS закрыт');
-                setTimeout(connect, 2000); 
-            };
-            ws.onmessage = (event) => {
-                console.log('WS сообщение получено:', event.data);
-                const data = JSON.parse(event.data);
-                console.log('Парс: action=', data.action, 'entries length=', data.entries ? data.entries.length : 'no entries');
-
-                if (data.action === 'browse_result') {
-                    renderBrowser(data);
-                } else if (data.action === 'path_resolved') {
-                    if (data.full_path) {
-                        filePaths[currentId] = data.full_path;
-                        document.getElementById(currentId + '_path').textContent = data.full_path;
-                        if (currentId === 'video1' || currentId === 'video2') {
-                            document.getElementById('videoPreview').src = data.preview_mode === 'http' ? `http://127.0.0.1:${SERVER_PORT}/video?file=${encodeURIComponent(data.relative_path)}` : 'file://' + data.full_path;
-                        }
-                        if (currentId === 'output_dir') {
-                            document.getElementById('output_dir_path').textContent = data.full_path;
-                        }
-                    }
-                    document.getElementById('file-modal').classList.add('hidden');
-                    document.getElementById('select-dir-btn').classList.add('hidden');
-                } else if (data.action === 'error') {
-                    console.error('Ошибка от сервера:', data.message);
-                    document.getElementById('file-list').innerHTML = `<div style="color: red; padding: 10px;">Ошибка: ${data.message}</div>`;
-                } else if (data.action === 'log') {
-                    if (data.message.startsWith('frame=')) {
-                        const lines = logOutput.textContent.split('\n');
-                        if (lines.length > 1 && lines[lines.length - 2].startsWith('frame=')) {
-                            lines[lines.length - 2] = data.message;
-                            logOutput.textContent = lines.join('\n');
-                        } else {
-                            logOutput.textContent += data.message + '\n';
-                        }
-                    } else {
-                        logOutput.textContent += data.message + '\n';
-                    }
-                    logOutput.scrollTop = logOutput.scrollHeight;
-                } else if (data.action === 'finished') {
-                    document.getElementById('submitBtn').disabled = false;
-                    document.getElementById('submitBtn').textContent = 'Начать Обработку';
-                } else if (data.action === 'preview_map_ready') {
-                    timelineMap = data.timeline_map;
-                    virtualPlayerState.duration = data.total_duration;
-                    document.getElementById('v-progress-bar').max = data.total_duration;
-                    document.getElementById('v-time-display').textContent = `00:00:00 / ${secondsToHMS(data.total_duration)}`;
-                    showVirtualPlayer();
+        function updateVolumeLabel() {
+            const val = document.getElementById('volume_slider').value;
+            document.getElementById('volume_value').textContent = val + 'x';
+            
+            // Debounce the preview update to avoid spamming server
+            clearTimeout(volumeDebounceTimer);
+            volumeDebounceTimer = setTimeout(() => {
+                saveState();
+                // При смене громкости нужно обновить текущий фрагмент, чтобы услышать изменения
+                if (filePaths.video1 && virtualPlayerState.currentTime >= 0) {
+                     requestPreviewFragment(virtualPlayerState.currentTime);
                 }
-            };
+            }, 500);
         }
 
-        function sendMessage(action, path) {
-            console.log(`Отправка: ${action} для ${path}`);
-            ws.send(JSON.stringify({ action, path }));
-        }
-
-        function renderBrowser(data) {
-            console.log('renderBrowser вызван, entries:', data.entries ? data.entries.length : 0);
-            const fileList = document.getElementById('file-list');
-            const pathInput = document.getElementById('current-path');
-            
-            pathInput.value = data.path;
-            
-            fileList.innerHTML = '(загрузка...)';
-            
-            let html = '';
-            const path = data.path;
-            const entries = data.entries || [];
-            
-            if (path !== '/') {
-                const parentPath = path.substring(0, path.lastIndexOf('/')) || '/';
-                html += `<div class="file-entry dir" data-path="${parentPath}">.. (Наверх)</div>`;
-            }
-            
-            html += entries.map(e => {
-                if (!e || !e.name) return '';
-                const fullPath = (path === '/' ? '' : path) + '/' + e.name;
-                return `<div class="file-entry ${e.type || 'file'}" data-path="${fullPath}">${e.name}</div>`;
-            }).join('');
-            
-            fileList.innerHTML = html || '(пусто)';
-            console.log('Рендер завершён, HTML length:', html.length);
-        }
-
-        function goUp() {
-            const pathInput = document.getElementById('current-path');
-            let currentPath = pathInput.value;
-            if (currentPath !== '/') {
-                const parentPath = currentPath.substring(0, currentPath.lastIndexOf('/')) || '/';
-                sendMessage('browse_path', parentPath);
+        // --- Стандартные функции ---
+        function showLoading(show) { document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none'; }
+        function swapPlayers() { [activePlayer, hiddenPlayer] = [hiddenPlayer, activePlayer]; activePlayer.classList.remove('inactive-player'); hiddenPlayer.classList.add('inactive-player'); hiddenPlayer.src = ''; }
+        function hmsToSeconds(str) { if (!str) return 0; const p = str.split(':').map(Number); let s = 0; if (p.length === 3) s = p[0] * 3600 + p[1] * 60 + p[2]; else if (p.length === 2) s = p[0] * 60 + p[1]; else if (p.length === 1 && str) s = parseFloat(str); return isNaN(s) ? 0 : s; }
+        function secondsToHMS(s) { s = s || 0; const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); const sec = Math.floor(s % 60); return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`; }
+        
+        function jumpToTime(id) {
+            const input = document.getElementById(id); const time = hmsToSeconds(input.value);
+            if (filePaths.video1) {
+                virtualPlayerState.currentTime = time;
+                updateTimeDisplay();
+                document.getElementById('v-progress-bar').value = time;
+                handleSeek(time);
             }
         }
-
-        function openModal(id) {
-            currentId = id;
-            console.log('Открываем модалку для', id);
-            document.getElementById('file-modal').classList.remove('hidden');
-            document.getElementById('file-list').innerHTML = '(загрузка...)';
-            sendMessage('browse_path', '/');
+        
+        function updateTimeDisplay() {
+            document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(totalFinalDuration)}`;
         }
 
-        function selectFile(id) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) { 
-                console.error('WS не готов');
-                logOutput.textContent += '\nОшибка: нет соединения.\n'; return; 
+        function requestPreviewFragment(globalTime, isPreload = false) {
+            globalTime = Math.max(0, globalTime);
+            const roundedStart = Math.floor(globalTime / FRAGMENT_DURATION) * FRAGMENT_DURATION;
+            
+            if (isPreload && (lastPreloadTime === roundedStart || lastRequestedTime === roundedStart)) return;
+            if (!isPreload && lastRequestedTime === roundedStart && activePlayer.src && !volumeDebounceTimer) return; // Allow re-request if volume changed
+
+            if (isPreload) {
+                lastPreloadTime = roundedStart;
+            } else {
+                lastRequestedTime = roundedStart;
+                lastPreloadTime = -1;
+                hiddenPlayer.src = '';
+                showLoading(true);
             }
-            document.getElementById('select-dir-btn').classList.add('hidden');
-            openModal(id);
+            ws.send(JSON.stringify({ action: "generate_preview_fragment", start_time: roundedStart, params: gatherCurrentParams() }));
         }
 
-        function selectDirectory(id) {
-            document.getElementById('select-dir-btn').classList.remove('hidden');
-            openModal(id);
+        function onPreviewFragmentReady(data) {
+            const receivedTime = data.start_time;
+            const url = `http://${window.location.host}/video?path=${encodeURIComponent(data.relative_path)}&t=${Date.now()}`; // Anti-cache
+            
+            if (lastRequestedTime === receivedTime) {
+                showLoading(false);
+                virtualPlayerState.isWaitingForFragment = false;
+                currentFragment = { start: data.start_time, duration: data.duration };
+                activePlayer.src = url;
+                const seekTo = Math.max(0, virtualPlayerState.currentTime - data.start_time);
+                
+                const playIfEnabled = () => { if (virtualPlayerState.isPlaying) activePlayer.play().catch(console.error); };
+                if(activePlayer.readyState >= 1) { activePlayer.currentTime = seekTo; playIfEnabled(); } 
+                else { activePlayer.onloadedmetadata = () => { activePlayer.currentTime = seekTo; playIfEnabled(); activePlayer.onloadedmetadata = null; }; }
+            } else if (lastPreloadTime === receivedTime) { hiddenPlayer.src = url; }
         }
 
-        function toggleMode() {
-            const isSingleFileMode = document.getElementById('singleFile').checked;
-            const isSingleSegmentMode = document.getElementById('is_single_segment').checked;
-            
-            document.getElementById('video2_container').style.display = isSingleFileMode ? 'none' : 'block';
-            document.getElementById('audio2_container').style.display = isSingleFileMode ? 'none' : 'block';
-            document.getElementById('single_segment_toggle_div').style.display = isSingleFileMode ? 'block' : 'none';
-            
-            const showSecondTimecodes = !isSingleFileMode || (isSingleFileMode && !isSingleSegmentMode);
-            document.getElementById('part2_timecodes').style.display = showSecondTimecodes ? 'block' : 'none';
-
-            saveState(); 
-        }
-
-        function submitForm() {
-            if (!ws || ws.readyState !== WebSocket.OPEN) { logOutput.textContent += '\nОшибка: нет соединения.\n'; return; }
-            if (!filePaths.video1) { alert("Пожалуйста, выберите Видео 1"); return; }
-            
-            document.getElementById('submitBtn').disabled = true;
-            document.getElementById('submitBtn').textContent = 'Обработка...';
-            logOutput.textContent = 'Запускаем...\n';
-            
-            const params = {
-                use_ram: document.getElementById('use_ram').checked,
-                mode: document.querySelector('input[name="mode"]:checked').value,
-                is_single_segment: document.getElementById('is_single_segment').checked,
-                intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value,
-                start1: document.getElementById('start1').value, end1: document.getElementById('end1').value,
-                start2: document.getElementById('start2').value, end2: document.getElementById('end2').value,
-                output_dir: filePaths.output_dir,
-                ...filePaths
-            };
-            ws.send(JSON.stringify({ action: 'process', params: params }));
-        }
-
-        // Виртуальный плеер функции
-        function showVirtualPlayer() {
+        function onPreviewMapReady(data) {
+            totalFinalDuration = data.total_duration;
+            document.getElementById('v-progress-bar').max = totalFinalDuration;
+            if(currentFragment.start === -1) { virtualPlayerState.currentTime = 0; updateTimeDisplay(); requestPreviewFragment(0); }
             document.getElementById('virtual-player').style.display = 'block';
         }
 
-        function handleVirtualPlayPause() {
-            const video = document.getElementById('videoPreview');
-            if (virtualPlayerState.isPlaying) {
-                video.pause();
-                virtualPlayerState.isPlaying = false;
-                document.getElementById('v-play-btn').textContent = '▶';
-            } else {
-                const globalTime = parseFloat(document.getElementById('v-progress-bar').value);
-                seekToGlobalTime(globalTime);
-                video.play();
-                virtualPlayerState.isPlaying = true;
-                document.getElementById('v-play-btn').textContent = '⏸';
-            }
+        function gatherCurrentParams() { 
+            lastProcessingParams = { 
+                use_ram: document.getElementById('use_ram').checked, 
+                mode: document.querySelector('input[name="mode"]:checked').value, 
+                is_single_segment: document.getElementById('is_single_segment').checked, 
+                intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value, 
+                start1: document.getElementById('start1').value, end1: document.getElementById('end1').value, 
+                start2: document.getElementById('start2').value, end2: document.getElementById('end2').value, 
+                output_dir: filePaths.output_dir,
+                volume: document.getElementById('volume_slider').value, // NEW
+                ...filePaths 
+            }; 
+            return lastProcessingParams; 
         }
 
-        function handleVirtualSeek(event) {
-            const globalTime = parseFloat(event.target.value);
-            virtualPlayerState.currentTime = globalTime;
-            updateTimeDisplay();
-            if (!virtualPlayerState.isSeeking) {
-                seekToGlobalTime(globalTime);
-            }
+        function requestPreviewMap() { if (ws && ws.readyState === WebSocket.OPEN && filePaths.video1) { logOutput.textContent += '\nЗапрашиваем карту предпросмотра...\n'; gatherCurrentParams(); ws.send(JSON.stringify({ action: 'generate_preview_map', params: lastProcessingParams })); } }
+        function submitForm() { if (!ws || ws.readyState !== WebSocket.OPEN || !filePaths.video1) return; document.getElementById('submitBtn').disabled = true; document.getElementById('submitBtn').textContent = 'Обработка...'; logOutput.textContent = 'Запускаем финальную сборку...\n'; ws.send(JSON.stringify({ action: 'process', params: gatherCurrentParams() })); }
+        function sendMessage(action, path, id) { ws.send(JSON.stringify({ action, path, id })); }
+        
+        function connect() { 
+            ws = new WebSocket('ws://' + window.location.host); 
+            ws.onopen = () => { logOutput.textContent = 'Соединение установлено.\n'; setTimeout(requestPreviewMap, 500); }; 
+            ws.onclose = () => { setTimeout(connect, 2000); }; 
+            ws.onmessage = (event) => { 
+                const data = JSON.parse(event.data); 
+                switch(data.action) { 
+                    case 'log': 
+                        if (data.message.startsWith('frame=')) { 
+                             const lines = logOutput.textContent.split('\n');
+                             if (lines.length > 1 && lines[lines.length - 2].startsWith('frame=')) { lines[lines.length - 2] = data.message; logOutput.textContent = lines.join('\n'); }
+                             else { logOutput.textContent += data.message + '\n'; }
+                        } else { logOutput.textContent += data.message + '\n'; } 
+                        logOutput.scrollTop = logOutput.scrollHeight; 
+                        break; 
+                    case 'finished': document.getElementById('submitBtn').disabled = false; document.getElementById('submitBtn').textContent = 'Начать Обработку'; break; 
+                    case 'browse_result': renderBrowser(data); break; 
+                    case 'path_resolved': 
+                        if (data.full_path) { 
+                            filePaths[currentId] = data.full_path; 
+                            document.getElementById(currentId + '_path').textContent = data.full_path; 
+                            if (currentId === 'video1' || currentId === 'video2') requestPreviewMap(); 
+                        } 
+                        document.getElementById('file-modal').classList.add('hidden'); 
+                        document.getElementById('select-dir-btn').classList.add('hidden'); 
+                        saveState(); 
+                        break; 
+                    case 'error': 
+                        logOutput.textContent += `\nОШИБКА: ${data.message}\n`; 
+                        showLoading(false);
+                        virtualPlayerState.isWaitingForFragment = false;
+                        break; 
+                    case 'preview_map_ready': onPreviewMapReady(data); break; 
+                    case 'preview_fragment_ready': onPreviewFragmentReady(data); break; 
+                } 
+            }; 
+        }
+        
+        function renderBrowser(data) { const fileList = document.getElementById('file-list'); document.getElementById('current-path').value = data.path; fileList.innerHTML = ''; let html = ''; if (data.path !== '/') { const parentPath = data.path.substring(0, data.path.lastIndexOf('/')) || '/'; html += `<div class="file-entry dir" data-path="${parentPath}">.. (Наверх)</div>`; } html += (data.entries || []).map(e => `<div class="file-entry ${e.type}" data-path="${(data.path === '/' ? '' : data.path) + '/' + e.name}">${e.name}</div>`).join(''); fileList.innerHTML = html || '(пусто)'; }
+        function goUp() { const p = document.getElementById('current-path').value; if (p !== '/') sendMessage('browse_path', p.substring(0, p.lastIndexOf('/')) || '/', currentId); }
+        function openModal(id) { currentId = id; document.getElementById('file-modal').classList.remove('hidden'); document.getElementById('file-list').innerHTML = '(загрузка...)'; sendMessage('browse_path', '/', currentId); }
+        function selectFile(id) { if (!ws || ws.readyState !== WebSocket.OPEN) return; document.getElementById('select-dir-btn').classList.add('hidden'); openModal(id); }
+        function selectDirectory(id) { document.getElementById('select-dir-btn').classList.remove('hidden'); openModal(id); }
+        function toggleMode() { const isSingleFile = document.getElementById('singleFile').checked; const isSingleSeg = document.getElementById('is_single_segment').checked; document.getElementById('video2_container').style.display = isSingleFile ? 'none' : 'block'; document.getElementById('audio2_container').style.display = isSingleFile ? 'none' : 'block'; document.getElementById('single_segment_toggle_div').style.display = isSingleFile ? 'block' : 'none'; document.getElementById('part2_timecodes').style.display = !isSingleFile || (isSingleFile && !isSingleSeg) ? 'block' : 'none'; saveState(); requestPreviewMap(); }
+        function saveState() { 
+            const state = { 
+                filePaths, start1: document.getElementById('start1').value, end1: document.getElementById('end1').value, 
+                start2: document.getElementById('start2').value, end2: document.getElementById('end2').value, 
+                mode: document.querySelector('input[name="mode"]:checked').value, 
+                is_single_segment: document.getElementById('is_single_segment').checked, 
+                use_ram: document.getElementById('use_ram').checked, 
+                intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value,
+                volume: document.getElementById('volume_slider').value 
+            }; 
+            localStorage.setItem('videoEditorState', JSON.stringify(state)); 
+        }
+        function loadState() { 
+            const saved = localStorage.getItem('videoEditorState'); 
+            if (saved) { 
+                const state = JSON.parse(saved); 
+                filePaths = { ...filePaths, ...state.filePaths }; 
+                document.getElementById('start1').value = state.start1 || ''; 
+                document.getElementById('end1').value = state.end1 || ''; 
+                document.getElementById('start2').value = state.start2 || ''; 
+                document.getElementById('end2').value = state.end2 || ''; 
+                document.querySelector(`input[name="mode"][value="${state.mode || 'single'}"]`).checked = true; 
+                document.getElementById('is_single_segment').checked = state.is_single_segment || false; 
+                document.getElementById('use_ram').checked = state.use_ram !== false; 
+                document.querySelector(`input[name="intro_resolution"][value="${state.intro_resolution || '2k'}"]`).checked = true; 
+                
+                // Volume state
+                const vol = state.volume || 1.5;
+                document.getElementById('volume_slider').value = vol;
+                document.getElementById('volume_value').textContent = vol + 'x';
+
+                Object.keys(filePaths).forEach(key => { if (filePaths[key] && !key.endsWith('_relative')) document.getElementById(key + '_path').textContent = filePaths[key]; }); 
+            } 
         }
 
-        function seekToGlobalTime(globalTime) {
-            const segment = timelineMap.find(s => globalTime >= s.timeline_start && globalTime < s.timeline_start + s.duration);
-            if (segment) {
-                const localTime = globalTime - segment.timeline_start + segment.source_start_time;
-                document.getElementById('videoPreview').currentTime = localTime;
-                document.getElementById('videoPreview').src = segment.preview_mode === 'http' ? `http://127.0.0.1:${SERVER_PORT}/video?file=${encodeURIComponent(segment.relative_path)}&start=${localTime}` : 'file://' + segment.source_file;
-            }
-        }
-
-        function updateTimeDisplay() {
-            document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(virtualPlayerState.duration)}`;
-            document.getElementById('v-progress-bar').value = virtualPlayerState.currentTime;
-        }
-
-        function onVideoTimeUpdate() {
-            if (virtualPlayerState.isPlaying && !virtualPlayerState.isSeeking) {
-                const video = document.getElementById('videoPreview');
-                const globalTime = timelineMap.find(s => video.currentTime >= s.source_start_time && video.currentTime < s.source_start_time + s.duration)?.timeline_start + (video.currentTime - s.source_start_time) || 0;
-                virtualPlayerState.currentTime = globalTime;
-                updateTimeDisplay();
-            }
-        }
-
-        function saveState() {
-            const state = {
-                filePaths,
-                start1: document.getElementById('start1').value,
-                end1: document.getElementById('end1').value,
-                start2: document.getElementById('start2').value,
-                end2: document.getElementById('end2').value,
-                mode: document.querySelector('input[name="mode"]:checked').value,
-                is_single_segment: document.getElementById('is_single_segment').checked,
-                use_ram: document.getElementById('use_ram').checked,
-                intro_resolution: document.querySelector('input[name="intro_resolution"]:checked').value
-            };
-            localStorage.setItem('videoEditorState', JSON.stringify(state));
-        }
-
-        function loadState() {
-            const saved = localStorage.getItem('videoEditorState');
-            if (saved) {
-                const state = JSON.parse(saved);
-                filePaths = { ...filePaths, ...state.filePaths };
-                Object.entries({ start1: 'start1', end1: 'end1', start2: 'start2', end2: 'end2' }).forEach(([key, id]) => {
-                    document.getElementById(id).value = state[key] || '';
-                });
-                document.querySelector(`input[name="mode"][value="${state.mode || 'single'}"]`).checked = true;
-                document.getElementById('is_single_segment').checked = state.is_single_segment || false;
-                document.getElementById('use_ram').checked = state.use_ram !== false;
-                document.querySelector(`input[name="intro_resolution"][value="${state.intro_resolution || '2k'}"]`).checked = true;
-                Object.keys(filePaths).forEach(key => {
-                    if (filePaths[key]) {
-                        document.getElementById(key + '_path').textContent = filePaths[key];
-                    }
-                });
-                if (filePaths.video1 || filePaths.video2) {
-                    document.getElementById('videoPreview').src = 'file://' + (filePaths.video1 || filePaths.video2);
-                }
-            }
+        function handleSeek(time) {
+            virtualPlayerState.isSeeking = false;
+            virtualPlayerState.isWaitingForFragment = true;
+            virtualPlayerState.currentTime = time;
+            document.getElementById('v-progress-bar').value = time; 
+            
+            activePlayer.pause();
+            hiddenPlayer.pause();
+            lastRequestedTime = -1;
+            lastPreloadTime = -1;
+            
+            requestPreviewFragment(virtualPlayerState.currentTime);
         }
 
         window.onload = () => {
-            connect();
-            loadState(); 
-            toggleMode();
+            loadState(); connect(); toggleMode();
+            activePlayer = document.getElementById('videoPlayerA'); hiddenPlayer = document.getElementById('videoPlayerB');
+            const vPlayBtn = document.getElementById('v-play-btn'); const vProgressBar = document.getElementById('v-progress-bar');
+            
+            [activePlayer, hiddenPlayer].forEach(p => {
+                p.addEventListener('timeupdate', () => {
+                    if (p !== activePlayer || virtualPlayerState.isSeeking || virtualPlayerState.isWaitingForFragment) return;
+                    virtualPlayerState.currentTime = currentFragment.start + p.currentTime;
+                    document.getElementById('v-time-display').textContent = `${secondsToHMS(virtualPlayerState.currentTime)} / ${secondsToHMS(totalFinalDuration)}`;
+                    vProgressBar.value = virtualPlayerState.currentTime;
+                    if (p.duration > 0 && p.duration - p.currentTime < PRELOAD_SECONDS) {
+                        const nextStart = currentFragment.start + FRAGMENT_DURATION;
+                        if (nextStart < totalFinalDuration) { requestPreviewFragment(nextStart, true); }
+                    }
+                });
 
-            document.querySelectorAll('input[type="text"]').forEach(input => {
-                input.addEventListener('input', saveState); 
-            });
-            document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(input => {
-                input.addEventListener('change', saveState);
+                p.addEventListener('ended', () => {
+                    if (p !== activePlayer || !virtualPlayerState.isPlaying) return;
+                    const nextFragmentStart = currentFragment.start + FRAGMENT_DURATION;
+                    if (nextFragmentStart >= totalFinalDuration) { virtualPlayerState.isPlaying = false; vPlayBtn.textContent = '▶'; return; }
+                    
+                    if (hiddenPlayer.readyState >= 3 && hiddenPlayer.src) { 
+                        currentFragment.start = nextFragmentStart; 
+                        currentFragment.duration = hiddenPlayer.duration; 
+                        swapPlayers(); 
+                        activePlayer.play().catch(console.error);
+                    } else {
+                        showLoading(true);
+                        hiddenPlayer.oncanplay = () => { 
+                            showLoading(false);
+                            currentFragment.start = nextFragmentStart; 
+                            currentFragment.duration = hiddenPlayer.duration; 
+                            swapPlayers(); 
+                            activePlayer.play().catch(console.error);
+                            hiddenPlayer.oncanplay = null; 
+                        };
+                    }
+                });
             });
 
+            vPlayBtn.addEventListener('click', () => { 
+                virtualPlayerState.isPlaying = !virtualPlayerState.isPlaying; 
+                vPlayBtn.textContent = virtualPlayerState.isPlaying ? '⏸' : '▶'; 
+                if (virtualPlayerState.isPlaying) { 
+                    if (activePlayer.src) activePlayer.play().catch(console.error); 
+                    else requestPreviewFragment(virtualPlayerState.currentTime); 
+                } else { activePlayer.pause(); } 
+            });
+            
+            vProgressBar.addEventListener('input', (e) => {
+                virtualPlayerState.isSeeking = true;
+                const val = parseFloat(e.target.value);
+                document.getElementById('v-time-display').textContent = `${secondsToHMS(val)} / ${secondsToHMS(totalFinalDuration)}`;
+            });
+            
+            vProgressBar.addEventListener('change', (e) => {
+                handleSeek(parseFloat(e.target.value));
+            });
+
+            ['start1', 'end1', 'start2', 'end2'].forEach(id => { document.getElementById(id).addEventListener('change', () => { saveState(); requestPreviewMap(); }); });
+            document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(input => input.addEventListener('change', () => { saveState(); if (input.name === 'mode' || input.name === 'is_single_segment' || input.name === 'intro_resolution') { requestPreviewMap(); } }));
             document.getElementById('close-btn').onclick = () => document.getElementById('file-modal').classList.add('hidden');
             document.getElementById('up-btn').onclick = goUp;
-            document.getElementById('select-dir-btn').onclick = () => {
-                const path = document.getElementById('current-path').value;
-                sendMessage('resolve_path', path);
-            };
-            document.getElementById('current-path').onkeydown = (e) => { if (e.key === 'Enter') sendMessage('browse_path', e.target.value); };
-            
-            document.getElementById('file-list').onclick = (e) => {
-                const target = e.target.closest('.file-entry');
-                if (!target) return;
-                const path = target.dataset.path;
-                const isDir = target.classList.contains('dir');
-                if (isDir) {
-                    sendMessage('browse_path', path);
-                } else if (!document.getElementById('select-dir-btn').classList.contains('hidden')) {
-                    return;
-                } else {
-                    sendMessage('resolve_path', path);
-                }
-            };
-
-            const videoEl = document.getElementById('videoPreview');
-            videoEl.addEventListener('loadedmetadata', () => {
-                if (timelineMap.length === 0) {
-                    ws.send(JSON.stringify({ action: 'generate_preview_map', params: { ...filePaths, start1: document.getElementById('start1').value, end1: document.getElementById('end1').value, start2: document.getElementById('start2').value, end2: document.getElementById('end2').value } }));
-                }
-            });
-            videoEl.addEventListener('timeupdate', onVideoTimeUpdate);
-            videoEl.addEventListener('ended', () => {
-                virtualPlayerState.isPlaying = false;
-                document.getElementById('v-play-btn').textContent = '▶';
-            });
+            document.getElementById('select-dir-btn').onclick = () => { sendMessage('resolve_path', document.getElementById('current-path').value, currentId); };
+            document.getElementById('current-path').onkeydown = (e) => { if (e.key === 'Enter') sendMessage('browse_path', e.target.value, currentId); };
+            document.getElementById('file-list').onclick = (e) => { const t = e.target.closest('.file-entry'); if (t) { if (t.classList.contains('dir')) sendMessage('browse_path', t.dataset.path, currentId); else if (!document.getElementById('select-dir-btn').classList.contains('hidden')) return; else sendMessage('resolve_path', t.dataset.path, currentId); } };
         };
     </script>
 </body>
