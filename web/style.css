@@ -1,0 +1,112 @@
+:root {
+    --main-bg: #282a36;
+    --main-fg: #f8f8f2;
+    --panel-bg: #44475a;
+    --border-color: #6272a4;
+    --accent-green: #50fa7b;
+    --accent-purple: #bd93f9;
+    --accent-pink: #ff79c6;
+    --log-bg: #21222c;
+    
+    --tl-yellow: #f1c40f;
+    --tl-lightblue: #3498db;
+    --tl-blue: #2980b9;
+}
+
+body {
+    font-family: 'Segoe UI', sans-serif;
+    background: var(--main-bg);
+    color: var(--main-fg);
+    max-width: 1200px;
+    margin: 2em auto;
+    padding: 1em;
+}
+
+.container { display: flex; flex-wrap: wrap; gap: 20px; }
+.form-column { flex: 1; min-width: 400px; }
+.preview-column { flex: 2; min-width: 400px; }
+
+h1, h2 { color: var(--accent-green); border-bottom: 2px solid var(--panel-bg); }
+input[type="text"] { flex-grow: 1; padding: 8px; background: var(--panel-bg); color: var(--main-fg); border: 1px solid var(--border-color); border-radius: 4px; box-sizing: border-box; }
+
+button {
+    background-color: var(--border-color); color: var(--main-fg); border: none; padding: 8px; border-radius: 4px; cursor: pointer; transition: background-color 0.2s; width: 100%; margin-bottom: 10px;
+}
+button:hover { background-color: var(--accent-purple); }
+button.action-btn { background: var(--accent-green); color: var(--main-bg); padding: 15px; font-size: 1.2em; }
+button:disabled { background: var(--panel-bg); cursor: not-allowed; }
+
+/* Timeline Visualizer */
+#timeline-visual {
+    width: 100%;
+    height: 60px;
+    background: #1a1a1a;
+    border: 1px solid #555;
+    position: relative;
+    margin-top: 10px;
+    cursor: pointer;
+    overflow: hidden;
+    user-select: none;
+}
+
+#timeline-cursor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: red;
+    z-index: 10;
+    pointer-events: none;
+}
+
+#timeline-tracks {
+    display: flex;
+    width: 100%;
+    height: 100%;
+}
+
+.timeline-block {
+    height: 100%;
+    box-sizing: border-box;
+    border: 1px solid black;
+    position: relative;
+    overflow: hidden;
+}
+
+.block-label {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: white;
+    font-size: 10px;
+    white-space: nowrap;
+    text-shadow: 0 0 2px black;
+    pointer-events: none;
+}
+
+.color-yellow { background-color: var(--tl-yellow); }
+.color-lightblue { background-color: var(--tl-lightblue); }
+.color-blue { background-color: var(--tl-blue); }
+
+.segment-block { background: #2a2e32; border: 1px solid var(--border-color); padding: 10px; margin-bottom: 10px; border-radius: 4px; border-left: 4px solid var(--accent-purple); }
+.intro-block { border-left-color: var(--tl-yellow); }
+
+.video-container { position: relative; width: 100%; background: black; aspect-ratio: 16/9; }
+.video-container video { width: 100%; height: 100%; }
+.virtual-player-container { background: var(--log-bg); padding: 10px; border: 1px solid var(--panel-bg); border-bottom: none; display: none; }
+.player-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+#v-play-btn { width: 40px; height: 40px; font-size: 1.5em; padding: 0; margin: 0; background: var(--accent-green); color: #000; border: none; border-radius: 4px; cursor: pointer; }
+#v-time { font-family: monospace; color: var(--accent-green); }
+
+#log-output { background: var(--log-bg); border: 1px solid var(--panel-bg); height: 300px; overflow-y: scroll; white-space: pre-wrap; }
+
+/* FIX: Specificity for hidden class */
+.hidden { display: none !important; }
+
+.modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, .7); display: flex; justify-content: center; align-items: center; z-index: 1000 }
+.modal-content { background: var(--panel-bg); padding: 20px; border-radius: 4px; width: 90%; max-width: 600px; border: 1px solid var(--accent-green); }
+.file-entry { cursor: pointer; padding: 6px 8px; } .file-entry:hover { background: rgba(0, 187, 255, 0.15); }
+
+.time-input-group { display: flex; align-items: center; margin-bottom: 10px; }
+.jump-btn { background: var(--accent-purple); width: 40px; height: 38px; font-size: 1.2em; padding: 0; margin-left: 5px; flex-shrink: 0; border: none; border-radius: 4px; color: white; cursor: pointer; }
+.file-path-display { padding: 8px; background: #333; border-radius: 4px; min-height: 1.2em; word-break: break-all; margin-top: 5px; margin-bottom: 10px; font-size: 0.9em; border: 1px dashed #555; }
