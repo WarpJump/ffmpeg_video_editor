@@ -53,9 +53,11 @@ VIDEO_ENCODER = "libx264"
 FINAL_AUDIO_CODEC = "pcm_s16le"
 
 ## Ширина видео для превью (низкое разрешение для скорости).
-PREVIEW_WIDTH = 854
+PREVIEW_WIDTH = 640
 ## Высота видео для превью.
-PREVIEW_HEIGHT = 480
+PREVIEW_HEIGHT = 360
+## FPS для превью (для скорости).
+PREVIEW_FPS = 20
 
 ## @var FRAGMENT_DURATION
 # @brief Длительность одного фрагмента предпросмотра (сек).

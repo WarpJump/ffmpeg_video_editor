@@ -16,9 +16,14 @@ from urllib.parse import urlparse, parse_qs
 
 from config import *
 from timeline import TimelineBuilder
-from renderer import FinalRenderer, render_preview_chunk, send_log
+from renderer import FinalRenderer, render_preview_chunk, send_log, detect_hw_support 
+import hardware # Важно для прогрева кэша
+
+# Словарь для хранения активных задач превью: {websocket_id: asyncio.Task}
+active_preview_tasks = {}
 
 async def handle_video_request(path, request_headers):
+    # ... (код без изменений) ...
     query = parse_qs(urlparse(path).query); abs_path = query.get('path', [None])[0]
     if not abs_path or not os.path.exists(abs_path): return (http.HTTPStatus.NOT_FOUND, [], b"Not found")
     file_size = os.path.getsize(abs_path); range_header = request_headers.get("Range")
@@ -31,13 +36,14 @@ async def handle_video_request(path, request_headers):
     headers["Content-Length"] = str(file_size); return (http.HTTPStatus.OK, headers, open(abs_path, "rb").read())
 
 async def websocket_handler(websocket):
-    log_debug("Клиент подключился")
+    ws_id = id(websocket)
+    log_debug(f"Клиент подключился (ID: {ws_id})")
     
-    # --- ОТПРАВКА НАЧАЛЬНОЙ КОНФИГУРАЦИИ ---
-    # Ищем дефолтное интро для отображения в UI
+    # Pre-warm hardware check on connection
+    asyncio.create_task(hardware.get_hardware_config())
+    
     default_intro = os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_2k.mkv")
     if not os.path.exists(default_intro):
-        # Попробуем Home dir
         default_intro = os.path.join(HOME_DIR, f"{INTRO_BASE_NAME}_2k.mkv")
         
     init_config = {
@@ -46,9 +52,7 @@ async def websocket_handler(websocket):
         "default_output": BROWSE_ROOT_OUTPUT
     }
     await websocket.send(json.dumps(init_config))
-    # ---------------------------------------
 
-    timeline_cache = None
     try:
         async for message in websocket:
             data = json.loads(message); action, params = data.get("action"), data.get("params", {})
@@ -66,24 +70,45 @@ async def websocket_handler(websocket):
                 }))
                 
             elif action == "generate_preview_fragment":
-                if not timeline_cache: timeline_cache = await TimelineBuilder(params, "/dev/shm" if os.path.exists("/dev/shm") else ".").build()
-                req_time = float(data.get("start_time", 0.0))
-                total = sum(c.duration for c in timeline_cache)
-                if req_time >= total: req_time = max(0, total - 1.0)
+                if ws_id in active_preview_tasks:
+                    old_task = active_preview_tasks[ws_id]
+                    if not old_task.done():
+                        # log_debug(f"[WS] Отмена старой задачи превью")
+                        old_task.cancel()
+                        try: await old_task
+                        except asyncio.CancelledError: pass
+
+                request_id = data.get("request_id") 
+                is_preload = data.get("is_preload", False)
                 
-                path, actual_start = await render_preview_chunk(websocket, timeline_cache, req_time)
-                
-                if path: 
-                    await websocket.send(json.dumps({
-                        "action": "preview_fragment_ready", 
-                        "start_time": actual_start, 
-                        "requested_time": req_time,
-                        "relative_path": path
-                    }))
-            
+                async def preview_task_wrapper():
+                    try:
+                        timeline_cache = await TimelineBuilder(params, "/dev/shm" if os.path.exists("/dev/shm") else ".").build()
+                        req_time = float(data.get("start_time", 0.0))
+                        exact_time = float(data.get("exact_time", req_time))
+                        total = sum(c.duration for c in timeline_cache)
+                        if req_time >= total: req_time = max(0, total - 1.0)
+                        
+                        path, actual_start = await render_preview_chunk(websocket, timeline_cache, req_time)
+                        
+                        if path: 
+                            await websocket.send(json.dumps({
+                                "action": "preview_fragment_ready", 
+                                "start_time": actual_start, 
+                                "requested_time": exact_time, 
+                                "relative_path": path,
+                                "request_id": request_id,
+                                "is_preload": is_preload
+                            }))
+                    except asyncio.CancelledError: raise
+                    except Exception as e:
+                        log_debug(f"[Task] Ошибка превью: {e}")
+                        import traceback; traceback.print_exc()
+
+                task = asyncio.create_task(preview_task_wrapper())
+                active_preview_tasks[ws_id] = task
+
             elif action == "process":
-                # Для process нам нужен Video1 для имени файла.
-                # В новом формате берем первый сегмент из списка.
                 segments = params.get('segments_list', [])
                 video1_path = segments[0].get('video') if segments else params.get('video1')
                 
@@ -95,7 +120,9 @@ async def websocket_handler(websocket):
                 out_dir, base = (params.get('output_dir') or BROWSE_ROOT_OUTPUT), os.path.splitext(os.path.basename(video1_path))[0]
                 out_path = os.path.join(out_dir, f"{base}_edited_{str(uuid.uuid4())[:4]}.mkv")
                 
-                await FinalRenderer(websocket, timeline, out_path).render()
+                intro_res = params.get('intro_resolution', '2k')
+                await FinalRenderer(websocket, timeline, out_path, intro_res).render()
+                
                 await send_log(websocket, f"\nГОТОВО! Финальный файл сохранен по пути:", msg_type="header")
                 await send_log(websocket, out_path, msg_type="log") 
                 await websocket.send(json.dumps({"action": "finished"}))
@@ -115,6 +142,10 @@ async def websocket_handler(websocket):
     except Exception as e:
         import traceback; err = traceback.format_exc(); log_debug(f"CRITICAL: {err}")
         await send_log(websocket, f"Критическая ошибка: {e}")
+    finally:
+        if ws_id in active_preview_tasks:
+            t = active_preview_tasks.pop(ws_id)
+            if not t.done(): t.cancel()
 
 async def http_server_handler(path, request_headers):
     if "websocket" in request_headers.get("Upgrade", "").lower(): return None
@@ -126,10 +157,16 @@ async def http_server_handler(path, request_headers):
     elif path == '/style.css': return (http.HTTPStatus.OK, {"Content-Type": "text/css"}, open(os.path.join(script_dir, "style.css"), "rb").read())
     return (http.HTTPStatus.NOT_FOUND, [], b"Not Found")
 
+
 async def main():
     log_debug(f"Сервер запущен. Порт {SERVER_PORT}. Лог: {APP_LOG_FILE}")
+    # НОВОЕ: Детекция VAAPI перед запуском сервера
+    await detect_hw_support()
+    
     async with serve(websocket_handler, "0.0.0.0", SERVER_PORT, process_request=http_server_handler):
-        print(f"Server: http://127.0.0.1:{SERVER_PORT}"); webbrowser.open_new_tab(f"http://127.0.0.1:{SERVER_PORT}"); await asyncio.Future()
+        print(f"Server: http://127.0.0.1:{SERVER_PORT}")
+        webbrowser.open_new_tab(f"http://127.0.0.1:{SERVER_PORT}")
+        await asyncio.Future()
 
 if __name__ == "__main__":
     try: asyncio.run(main())

@@ -2,9 +2,29 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Видео Редактор v40 (N-Segments)</title>
+    <title>Видео Редактор v46 (Hardware Accel + UI Fix)</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
+    <style>
+        .video-container { position: relative; width: 100%; background: black; aspect-ratio: 16/9; overflow: hidden; }
+        .video-container video { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+        
+        /* Interactive PiP Bounding Box */
+        #pip-overlay-box {
+            position: absolute;
+            border: 2px dashed #00bbff;
+            background: rgba(0, 187, 255, 0.2);
+            cursor: move;
+            display: none;
+            box-sizing: border-box;
+            z-index: 50;
+        }
+        .pip-handle {
+            position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid #00bbff; border-radius: 50%;
+        }
+        .handle-se { bottom: -6px; right: -6px; cursor: se-resize; }
+        .pip-hint { position: absolute; top: -25px; left: 0; background: rgba(0,0,0,0.7); color: white; padding: 2px 5px; font-size: 11px; white-space: nowrap; border-radius: 3px; }
+    </style>
 </head>
 <body>
     <h1>FFmaximum</h1>
@@ -15,7 +35,7 @@
                 <legend>Настройки</legend>
                 <div><input type="checkbox" id="use_ram" checked><label for="use_ram"> RAM-диск (/dev/shm)</label></div>
                 <div style="margin-top:10px;">
-                    <label>Громкость сегментов: <span id="vol_val">1.5x</span></label>
+                    <label>Громкость основного видео: <span id="vol_val">1.5x</span></label>
                     <input type="range" id="vol_slider" min="1.0" max="4.0" step="0.1" value="1.5" oninput="updateVol()">
                 </div>
                 <div style="margin-top:10px; border-top: 1px dashed #444; padding-top: 10px;">
@@ -32,8 +52,8 @@
                         <button type="button" onclick="selectFile('intro_file')">Выбрать файл интро...</button>
                         <div id="intro_file_path" class="file-path-display">(Загрузка...)</div>
                         <div>
-                            <input type="radio" id="res_2k" name="intro_res" value="2k" checked><label for="res_2k">2K</label>
-                            <input type="radio" id="res_fhd" name="intro_res" value="fullhd"><label for="res_fhd">FullHD</label>
+                            <input type="radio" id="res_2k" name="intro_res" value="2k" checked onchange="requestPreviewMap()"><label for="res_2k">2K (AR Match)</label>
+                            <input type="radio" id="res_fhd" name="intro_res" value="fullhd" onchange="requestPreviewMap()"><label for="res_fhd">FullHD (AR Match)</label>
                         </div>
                     </div>
                 </div>
@@ -47,10 +67,17 @@
 
         <div class="preview-column">
             <h2>Предпросмотр</h2>
-            <div class="video-container">
+            <div class="video-container" id="video-wrapper">
                 <div id="loading-overlay" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); color:white; justify-content:center; align-items:center; z-index: 100;">Загрузка...</div>
+                
                 <video id="videoPlayerA" playsinline></video>
                 <video id="videoPlayerB" style="display:none;" playsinline></video>
+                
+                <!-- Bounding Box -->
+                <div id="pip-overlay-box">
+                    <div class="pip-hint" id="pip-hint-text">Камера</div>
+                    <div class="pip-handle handle-se" id="pip-handle-se"></div>
+                </div>
             </div>
             
             <div class="virtual-player-container">
@@ -88,21 +115,24 @@
         const SERVER_PORT = "%%SERVER_PORT%%";
         let ws;
         let segments = [];
-        let globalSettings = { introPath: '', outputDir: '', volume: 1.5, introRes: '2k', useRam: true };
+        let globalSettings = { introPath: '', outputDir: '', volume: 1.5, useRam: true };
         let currentBrowseId = null;
         
+        let activePipSegmentId = null;
+        let dragDebounceTimer = null;
+        let lastRequestId = 0; 
+
+        // Глобальный объект для управления воспроизведением
         const streamer = {
             totalDuration: 0,
-            fragmentDuration: 10,
             isPlaying: false,
             currentPlayer: null,
             nextPlayer: null,
-            currentBucket: -1,
-            nextBucket: -1,
-            currentStartOffset: 0,
-            isLoading: false,
-            nextChunkRequested: false, 
-            lastPreloadedBucket: -1,
+            currentChunkStartTime: 0, 
+            nextChunkStartTime: -1,   
+            isLoading: false,         
+            nextChunkRequested: false,
+            clips: [], // Метаданные таймлайна
             
             init: function() {
                 this.currentPlayer = document.getElementById('videoPlayerA');
@@ -123,103 +153,125 @@
             },
             
             seek: function(time) {
-                this.isPlaying = true;
+                this.isPlaying = true; 
                 this.isLoading = true;
                 document.getElementById('v-play-btn').textContent = '⏸';
                 document.getElementById('loading-overlay').style.display = 'flex';
-                this.currentPlayer.pause();
+                this.currentPlayer.pause(); 
                 this.nextPlayer.pause();
-                this.currentBucket = -1;
-                this.nextBucket = -1;
+                this.nextChunkStartTime = -1;
                 this.nextChunkRequested = false;
-                this.lastPreloadedBucket = -1;
                 this.requestChunk(time, false);
             },
             
             requestChunk: function(time, isPreload) {
-                const bucket = Math.floor(time / this.fragmentDuration) * this.fragmentDuration;
-                if (bucket >= this.totalDuration) return;
+                if (time >= this.totalDuration) return;
                 if (isPreload) {
-                    if (this.nextChunkRequested || bucket === this.lastPreloadedBucket) return;
-                    this.nextBucket = bucket;
+                    if (this.nextChunkRequested) return;
+                    this.nextChunkStartTime = time; 
                     this.nextChunkRequested = true;
-                    this.lastPreloadedBucket = bucket;
-                } else {
-                    this.nextBucket = -1;
-                    this.nextChunkRequested = false;
-                    this.lastPreloadedBucket = -1;
                 }
+                lastRequestId++;
                 ws.send(JSON.stringify({ 
                     action: 'generate_preview_fragment', 
-                    start_time: bucket, 
-                    params: gatherParams() 
+                    start_time: time, 
+                    exact_time: time, 
+                    params: gatherParams(),
+                    request_id: lastRequestId,
+                    is_preload: isPreload
                 }));
             },
             
             onChunkReady: function(data) {
+                if (data.request_id && data.request_id < lastRequestId) return;
+
                 const url = `http://${window.location.host}/video?path=${encodeURIComponent(data.relative_path)}&t=${Date.now()}`;
-                const actualStart = data.start_time; 
-                const requested = data.requested_time; 
+                const chunkStart = data.start_time; 
+                const isPreload = data.is_preload;
                 
-                if (this.isLoading) {
+                if (this.isLoading && !isPreload) {
                     document.getElementById('loading-overlay').style.display = 'none';
                     this.isLoading = false;
-                    this.currentBucket = requested;
-                    this.currentStartOffset = actualStart;
-                    const seekOffset = requested - actualStart;
+                    this.currentChunkStartTime = chunkStart;
                     this.currentPlayer.src = url;
+                    this.currentPlayer.load();
                     const onLoaded = () => {
-                        this.currentPlayer.currentTime = Math.max(0, seekOffset);
-                        if (this.isPlaying) this.currentPlayer.play().catch(e => console.log(e));
+                        this.currentPlayer.currentTime = 0; 
+                        if (this.isPlaying) this.currentPlayer.play().catch(e=>console.log(e));
                         this.currentPlayer.removeEventListener('loadedmetadata', onLoaded);
                     };
                     this.currentPlayer.addEventListener('loadedmetadata', onLoaded);
                 } else {
-                    if (requested === this.nextBucket) {
-                         this.nextPlayer.src = url;
+                     if (Math.abs(chunkStart - this.nextChunkStartTime) < 0.5) {
+                         this.nextPlayer.src = url; 
                          this.nextPlayer.load();
-                         this.nextPlayer._bucketStart = requested;
-                         this.nextPlayer._actualStart = actualStart;
+                         this.nextPlayer._chunkStart = chunkStart;
                          this.nextChunkRequested = false; 
-                    }
+                     }
                 }
             },
             
             onTimeUpdate: function() {
-                if (!this.isPlaying || this.currentBucket < 0) return;
-                const globalTime = this.currentStartOffset + this.currentPlayer.currentTime;
-                const percent = (globalTime / this.totalDuration) * 100;
-                document.getElementById('timeline-cursor').style.left = percent + '%';
-                document.getElementById('v-time').textContent = `${formatTime(globalTime)} / ${formatTime(this.totalDuration)}`;
-                const nextGrid = this.currentBucket + this.fragmentDuration;
-                const remaining = this.currentPlayer.duration - this.currentPlayer.currentTime;
-                if (remaining < 5 && nextGrid !== this.lastPreloadedBucket && !this.nextChunkRequested && nextGrid < this.totalDuration) {
-                    this.requestChunk(nextGrid, true);
+                if (!this.isPlaying) return;
+                const playerTime = this.currentPlayer.currentTime;
+                if (!isFinite(playerTime)) return;
+
+                const globalTime = this.currentChunkStartTime + playerTime;
+                
+                if (this.totalDuration > 0) {
+                    const percent = (globalTime / this.totalDuration) * 100;
+                    document.getElementById('timeline-cursor').style.left = percent + '%';
+                    document.getElementById('v-time').textContent = `${formatTime(globalTime)} / ${formatTime(this.totalDuration)}`;
+                }
+
+                // PiP рамка: обновляем ТОЛЬКО если пользователь не тащит её прямо сейчас
+                const activeClip = this.clips.find(c => globalTime >= c.global_start && globalTime < (c.global_start + c.duration));
+                if (activeClip && activeClip.has_overlay && activeClip.segment_id && !isDraggingBox && !isResizingBox) {
+                    showPipBox(activeClip.segment_id, activeClip.overlay_coords);
+                } else if (!activeClip || !activeClip.has_overlay) {
+                    if (!isDraggingBox && !isResizingBox) hidePipBox();
+                }
+
+                // Preload
+                const duration = this.currentPlayer.duration;
+                if (isFinite(duration) && duration > 0) {
+                    const remaining = duration - playerTime;
+                    if (remaining < 3 && !this.nextChunkRequested && (this.currentChunkStartTime + duration) < this.totalDuration - 0.5) {
+                        const nextStart = this.currentChunkStartTime + duration;
+                        if (Math.abs(nextStart - this.nextChunkStartTime) > 0.5) {
+                            this.requestChunk(nextStart, true);
+                        }
+                    }
                 }
             },
             
             swap: function() {
                 if (this.nextPlayer.readyState >= 2) {
-                    this.currentPlayer.style.display = 'none';
+                    this.currentPlayer.style.display = 'none'; 
                     this.nextPlayer.style.display = 'block';
-                    const targetTime = this.nextPlayer._bucketStart;
-                    const actualStart = this.nextPlayer._actualStart;
-                    const seekOffset = targetTime - actualStart;
-                    this.nextPlayer.currentTime = Math.max(0, seekOffset);
+                    this.currentChunkStartTime = this.nextPlayer._chunkStart;
+                    this.nextPlayer.currentTime = 0; 
                     this.nextPlayer.play();
                     this.currentPlayer.pause();
-                    const temp = this.currentPlayer;
-                    this.currentPlayer = this.nextPlayer;
+                    const temp = this.currentPlayer; 
+                    this.currentPlayer = this.nextPlayer; 
                     this.nextPlayer = temp;
-                    this.currentPlayer.onended = () => this.swap();
+                    this.currentPlayer.onended = () => this.swap(); 
                     this.currentPlayer.ontimeupdate = () => this.onTimeUpdate();
-                    this.nextPlayer.onended = null;
+                    this.nextPlayer.onended = null; 
                     this.nextPlayer.ontimeupdate = null;
-                    this.nextBucket = -1;
+                    this.nextChunkStartTime = -1; 
                     this.nextChunkRequested = false;
                 } else {
-                    this.isPlaying = false;
-                    document.getElementById('v-play-btn').textContent = '▶';
+                    if (this.currentChunkStartTime + this.currentPlayer.duration >= this.totalDuration - 1.0) {
+                        this.isPlaying = false; 
+                        document.getElementById('v-play-btn').textContent = '▶';
+                    } else {
+                        this.isLoading = true;
+                        document.getElementById('loading-overlay').style.display = 'flex';
+                        const nextStart = this.currentChunkStartTime + this.currentPlayer.duration;
+                        this.seek(nextStart);
+                    }
                 }
             }
         };
@@ -229,29 +281,25 @@
             addSegment();
             streamer.init();
             setupTimelineInteraction();
+            setupPipInteraction();
         };
 
         function addSegment() {
             if (segments.length >= 10) return alert("Максимум 10 сегментов");
-            const id = Date.now();
+            const id = Date.now().toString();
             const visualNum = segments.length + 2; 
-            
-            let defaultVideo = '';
-            if (segments.length > 0) defaultVideo = segments[segments.length - 1].videoPath;
-
-            const segObj = { id, videoPath: defaultVideo, audioPath: '', start: '', end: '' };
+            let defaultVideo = segments.length > 0 ? segments[segments.length - 1].videoPath : '';
+            const segObj = { id, videoPath: defaultVideo, audioPath: '', overlayPath: '', start: '', end: '', pip_start: '', pip_end: '', pip_x: 0.7, pip_y: 0.7, pip_w: 0.25 };
             segments.push(segObj);
-
             const div = document.createElement('div');
-            div.className = 'segment-block';
-            div.id = `seg-${id}`;
+            div.className = 'segment-block'; div.id = `seg-${id}`;
             div.innerHTML = `
                 <div class="segment-header">
                     <span class="segment-title">${visualNum}. Фрагмент видео</span>
-                    <button class="remove-seg-btn" onclick="removeSegment(${id})">✕</button>
+                    <button class="remove-seg-btn" onclick="removeSegment('${id}')">✕</button>
                 </div>
                 <div>
-                    <button onclick="browse('${id}', 'video')">📹 Видео файл...</button>
+                    <button onclick="browse('${id}', 'video')">📹 Основное видео...</button>
                     <div id="path-video-${id}" class="file-path-display">${defaultVideo || '(не выбрано)'}</div>
                 </div>
                 <div style="margin-top:10px;">
@@ -262,27 +310,45 @@
                     </div>
                     <div class="time-input-group">
                         <label style="width:60px;">Конец:</label>
-                        <input type="text" id="end-${id}" placeholder="Конец" onchange="updateSeg('${id}', 'end', this.value)">
+                        <input type="text" id="end-${id}" placeholder="Конец файла" onchange="updateSeg('${id}', 'end', this.value)">
                         <button class="jump-btn" onclick="previewJump('${id}', 'end')">▶</button>
                     </div>
                 </div>
-            `;
+                <div style="margin-top:10px; padding: 10px; background: #333; border-radius: 4px; border: 1px dashed #555;">
+                    <label><input type="checkbox" id="pip-enable-${id}" onchange="togglePiP('${id}')"> 📸 Поверх экрана (Камера PiP)</label>
+                    <div id="pip-panel-${id}" class="hidden" style="margin-top: 10px; border-top: 1px solid #444; padding-top: 10px;">
+                        <button onclick="browse('${id}', 'overlay')" style="background: var(--border-color);">Выбрать видео камеры...</button>
+                        <div id="path-overlay-${id}" class="file-path-display" style="border:none; background:#222;">(не выбрано)</div>
+                        <div style="display: flex; gap: 10px; margin-top: 10px; margin-bottom: 10px;">
+                            <input type="text" id="pip-start-${id}" placeholder="Старт камеры (00:00)" onchange="updateSeg('${id}', 'pip_start', this.value)" style="flex:1;">
+                            <input type="text" id="pip-end-${id}" placeholder="Конец камеры (Опц.)" onchange="updateSeg('${id}', 'pip_end', this.value)" style="flex:1;">
+                        </div>
+                        <div style="font-size: 0.85em; color: #aaa; margin-bottom: 10px;">ℹ️ Разместите и измените размер камеры прямо на окне предпросмотра справа.</div>
+                        <label><input type="checkbox" id="pip-audio-${id}" onchange="requestPreviewMap()"> Микшировать звук камеры с основным</label>
+                    </div>
+                </div>`;
             document.getElementById('segments-container').appendChild(div);
         }
 
         function removeSegment(id) {
             segments = segments.filter(s => s.id !== id);
             document.getElementById(`seg-${id}`).remove();
-            
-            document.querySelectorAll('#segments-container .segment-title').forEach((el, idx) => {
-                el.textContent = `${idx + 2}. Фрагмент видео`;
-            });
+            document.querySelectorAll('#segments-container .segment-title').forEach((el, idx) => el.textContent = `${idx + 2}. Фрагмент видео`);
+            if (activePipSegmentId === id) hidePipBox();
             requestPreviewMap();
         }
 
         function updateSeg(id, field, value) {
-            const seg = segments.find(s => s.id == id);
+            const seg = segments.find(s => s.id === id);
             if (seg) seg[field] = value;
+            requestPreviewMap();
+        }
+        
+        function togglePiP(id) {
+            const enabled = document.getElementById(`pip-enable-${id}`).checked;
+            const panel = document.getElementById(`pip-panel-${id}`);
+            if (enabled) panel.classList.remove('hidden'); else panel.classList.add('hidden');
+            if (!enabled && activePipSegmentId === id) hidePipBox();
             requestPreviewMap();
         }
 
@@ -301,6 +367,113 @@
         }
         function selectFile(type) { browse(null, type === 'intro_file' ? 'intro' : 'output'); }
         function selectDirectory(type) { browse(null, 'output'); }
+
+        // --- Управление Bounding Box (Drag & Resize) ---
+        const pipBox = document.getElementById('pip-overlay-box');
+        const videoWrapper = document.getElementById('video-wrapper');
+        let isDraggingBox = false; let isResizingBox = false;
+        let startX, startY, startLeft, startTop, startWidth;
+
+        function showPipBox(segId, coords) {
+            if (!coords) return;
+            activePipSegmentId = segId;
+            pipBox.style.display = 'block';
+            pipBox.style.left = (coords.x * 100) + '%';
+            pipBox.style.top = (coords.y * 100) + '%';
+            pipBox.style.width = (coords.w * 100) + '%';
+            pipBox.style.height = (coords.w * 100) + '%';
+            document.getElementById('pip-hint-text').textContent = `Камера (Сегм ${segments.findIndex(s=>s.id===segId)+1})`;
+        }
+
+        function hidePipBox() {
+            activePipSegmentId = null;
+            pipBox.style.display = 'none';
+        }
+
+        // --- ОБНОВЛЕННАЯ ЛОГИКА ДЛЯ МГНОВЕННОЙ РЕАКЦИИ UI ---
+        function updateLocalStateFromDom() {
+            if (!activePipSegmentId) return;
+            
+            // 1. Считываем текущее положение из DOM
+            const x = parseFloat(pipBox.style.left) / 100;
+            const y = parseFloat(pipBox.style.top) / 100;
+            const w = parseFloat(pipBox.style.width) / 100;
+
+            // 2. Обновляем segments (источник для запросов к бекенду)
+            const seg = segments.find(s => s.id === activePipSegmentId);
+            if (seg) {
+                seg.pip_x = x; seg.pip_y = y; seg.pip_w = w;
+            }
+
+            // 3. ВАЖНО: Обновляем streamer.clips (источник для onTimeUpdate)
+            // Это "Optimistic Update" - мы говорим плееру "новые координаты ТАКИЕ", не дожидаясь ответа сервера
+            const activeClip = streamer.clips.find(c => c.segment_id === activePipSegmentId);
+            if (activeClip && activeClip.overlay_coords) {
+                activeClip.overlay_coords.x = x;
+                activeClip.overlay_coords.y = y;
+                activeClip.overlay_coords.w = w;
+            }
+        }
+
+        function triggerUpdateDebounced() {
+            if (dragDebounceTimer) clearTimeout(dragDebounceTimer);
+            dragDebounceTimer = setTimeout(() => {
+                // Отправка на сервер (координаты уже в segments)
+                const currentTimeExact = streamer.currentChunkStartTime + streamer.currentPlayer.currentTime;
+                ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() }));
+                streamer.seek(currentTimeExact);
+            }, 200); 
+        }
+
+        function setupPipInteraction() {
+            const handle = document.getElementById('pip-handle-se');
+            
+            pipBox.addEventListener('mousedown', (e) => {
+                if(e.target === handle) return; 
+                isDraggingBox = true;
+                startX = e.clientX; startY = e.clientY;
+                startLeft = parseFloat(pipBox.style.left) || 0; startTop = parseFloat(pipBox.style.top) || 0;
+            });
+            
+            handle.addEventListener('mousedown', (e) => {
+                isResizingBox = true; e.stopPropagation();
+                startX = e.clientX; startWidth = parseFloat(pipBox.style.width) || 0;
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (isDraggingBox) {
+                    const rect = videoWrapper.getBoundingClientRect();
+                    const dx = ((e.clientX - startX) / rect.width) * 100;
+                    const dy = ((e.clientY - startY) / rect.height) * 100;
+                    let newLeft = Math.max(0, Math.min(startLeft + dx, 100 - parseFloat(pipBox.style.width)));
+                    let newTop = Math.max(0, Math.min(startTop + dy, 100 - parseFloat(pipBox.style.height)));
+                    pipBox.style.left = newLeft + '%'; pipBox.style.top = newTop + '%';
+                    
+                    // МГНОВЕННОЕ обновление состояния
+                    updateLocalStateFromDom();
+                    triggerUpdateDebounced();
+
+                } else if (isResizingBox) {
+                    const rect = videoWrapper.getBoundingClientRect();
+                    const dx = ((e.clientX - startX) / rect.width) * 100;
+                    let newWidth = Math.max(5, Math.min(startWidth + dx, 100 - parseFloat(pipBox.style.left))); 
+                    pipBox.style.width = newWidth + '%'; pipBox.style.height = newWidth + '%'; 
+                    
+                    // МГНОВЕННОЕ обновление состояния
+                    updateLocalStateFromDom();
+                    triggerUpdateDebounced();
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (isDraggingBox || isResizingBox) {
+                    // Финальное обновление перед выключением флага
+                    updateLocalStateFromDom();
+                    isDraggingBox = false; isResizingBox = false;
+                    triggerUpdateDebounced();
+                }
+            });
+        }
 
         function connectWS() {
             ws = new WebSocket('ws://' + window.location.host);
@@ -324,55 +497,43 @@
                 }
                 log.scrollTop = log.scrollHeight;
             } else if (data.action === 'config_info') {
-                // Config received from backend
-                if (data.default_intro) {
-                    globalSettings.introPath = data.default_intro;
-                    document.getElementById('intro_file_path').textContent = data.default_intro + " (Стандартное)";
-                } else {
-                    document.getElementById('intro_file_path').textContent = "(Не найдено)";
-                    console.warn("Интро не найдено в стандартных путях");
-                }
+                if (data.default_intro) { globalSettings.introPath = data.default_intro; document.getElementById('intro_file_path').textContent = data.default_intro + " (Стандартное)"; }
                 document.getElementById('output_dir_path').textContent = data.default_output;
                 globalSettings.outputDir = data.default_output;
-                
-            } else if (data.action === 'browse_result') {
-                renderFileList(data);
-            } else if (data.action === 'path_resolved') {
-                applySelectedPath(data.full_path);
-            } else if (data.action === 'preview_map_ready') {
+            } else if (data.action === 'browse_result') { renderFileList(data); }
+            else if (data.action === 'path_resolved') { applySelectedPath(data.full_path); }
+            else if (data.action === 'preview_map_ready') {
                 streamer.totalDuration = data.total_duration;
                 streamer.clips = data.clips;
                 renderTimelineVisual(data.clips, data.total_duration);
                 document.querySelector('.virtual-player-container').style.display = 'block'; 
                 document.getElementById('v-time').textContent = `00:00 / ${formatTime(data.total_duration)}`;
-            } else if (data.action === 'preview_fragment_ready') {
-                streamer.onChunkReady(data);
-            } else if (data.action === 'finished') {
+            } else if (data.action === 'preview_fragment_ready') { streamer.onChunkReady(data); }
+            else if (data.action === 'finished') {
                 document.getElementById('submitBtn').disabled = false;
                 document.getElementById('submitBtn').textContent = 'Начать Обработку';
             }
         }
 
         function gatherParams() {
-            // New Array-based Format
-            const params = {
+            return {
                 use_ram: document.getElementById('use_ram').checked,
                 intro_resolution: document.querySelector('input[name="intro_res"]:checked').value,
                 intro_file: globalSettings.introPath,
                 output_dir: globalSettings.outputDir,
                 volume: globalSettings.volume,
-                
-                // Pass segments list directly
-                segments_list: segments.map(s => ({
-                    video: s.videoPath,
-                    audio: s.audioPath || s.videoPath, // Fallback if audio empty
-                    start: s.start,
-                    end: s.end
-                }))
+                segments_list: segments.map(s => {
+                    const pipEnabled = document.getElementById(`pip-enable-${s.id}`)?.checked;
+                    const pipData = pipEnabled ? {
+                        video: s.overlayPath,
+                        start: s.pip_start,
+                        end: s.pip_end,
+                        x: s.pip_x, y: s.pip_y, w: s.pip_w,
+                        mix_audio: document.getElementById(`pip-audio-${s.id}`).checked
+                    } : null;
+                    return { id: s.id, video: s.videoPath, audio: s.audioPath || s.videoPath, start: s.start, end: s.end, overlay: pipData };
+                })
             };
-            
-            // Legacy mapping for compatibility if needed (Backend handles list now)
-            return params;
         }
 
         function submitForm() {
@@ -382,10 +543,7 @@
         }
 
         function requestPreviewMap() { 
-            // Only request if we have at least one valid video
-            if (segments.some(s => s.videoPath)) {
-                ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() })); 
-            }
+            if (segments.some(s => s.videoPath)) ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() })); 
         }
 
         function renderFileList(data) {
@@ -412,26 +570,21 @@
             if (currentBrowseId.type === 'intro') { globalSettings.introPath = path; document.getElementById('intro_file_path').textContent = path; }
             else if (currentBrowseId.type === 'output') { globalSettings.outputDir = path; document.getElementById('output_dir_path').textContent = path; }
             else {
-                const seg = segments.find(s => s.id == currentBrowseId.segId);
+                const seg = segments.find(s => s.id === currentBrowseId.segId);
                 if (seg) { 
-                    if (currentBrowseId.type === 'video') {
-                        seg.videoPath = path;
-                        document.getElementById(`path-video-${seg.id}`).textContent = path;
-                    } else {
-                        seg.audioPath = path;
-                        // Todo update audio text
-                    }
+                    if (currentBrowseId.type === 'video') { seg.videoPath = path; document.getElementById(`path-video-${seg.id}`).textContent = path; } 
+                    else if (currentBrowseId.type === 'overlay') { seg.overlayPath = path; document.getElementById(`path-overlay-${seg.id}`).textContent = path; }
                 }
             }
             requestPreviewMap();
         }
 
         function renderTimelineVisual(clips, totalDuration) {
-            const trackContainer = document.getElementById('timeline-tracks');
-            trackContainer.innerHTML = '';
+            const trackContainer = document.getElementById('timeline-tracks'); trackContainer.innerHTML = '';
             clips.forEach(clip => {
                 const block = document.createElement('div');
                 block.className = `timeline-block color-${clip.color}`;
+                if(clip.has_overlay) block.style.backgroundColor = 'var(--accent-pink)';
                 block.style.width = (clip.duration / totalDuration) * 100 + '%';
                 block.title = `${clip.name} (${formatTime(clip.duration)})`;
                 block.innerHTML = `<span class="block-label">${clip.name}</span>`;
@@ -444,8 +597,7 @@
             const handleScrub = (e) => {
                 const rect = timeline.getBoundingClientRect();
                 const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-                const percent = x / rect.width;
-                const time = percent * streamer.totalDuration;
+                const time = (x / rect.width) * streamer.totalDuration;
                 if (e.type === 'click' || e.type === 'mouseup') streamer.seek(time);
             };
             timeline.addEventListener('click', handleScrub);
@@ -455,34 +607,20 @@
         }
         
         function previewJump(segId, field) {
-            // Find global time for this segment start/end
-            const segIdx = segments.findIndex(s => s.id == segId);
-            // We need mapping from UI segment index to Timeline Clip index.
-            // Intro is clip 0. Seg1 is clips 1,2,3 (Fade, Body, Fade).
-            // Approximation:
-            // Calculate sum of durations of all clips BEFORE this segment.
-            // Note: This requires getting updated clips data from backend, which we have in streamer.clips
-            
-            // Simple heuristic: Iterate clips, find one named "Seg{i+1}_In" or "Seg{i+1}_Full"
+            const segIdx = segments.findIndex(s => s.id === segId);
             const targetNameStart = `Seg${segIdx + 1}`;
             const targetClip = streamer.clips.find(c => c.name.startsWith(targetNameStart));
-            
             if (targetClip) {
-                // If user clicked Start -> Jump to Clip Global Start
-                // If End -> Jump to Clip Global End
                 let time = targetClip.global_start;
                 if (field === 'end') {
-                    // Find the LAST clip of this segment (e.g. Seg1_Out)
                     const lastClip = streamer.clips.slice().reverse().find(c => c.name.startsWith(targetNameStart));
-                    if (lastClip) time = lastClip.global_start + lastClip.duration - 5; // Jump 5s before end
+                    if (lastClip) time = lastClip.global_start + lastClip.duration - 5; 
                 }
                 streamer.seek(time);
             }
         }
         
         function formatTime(s) { const m = Math.floor(s/60); const sec = Math.floor(s%60); return `${m}:${sec.toString().padStart(2,'0')}`; }
-        function hmsToSeconds(str) { if (!str) return 0; const p = str.split(':').map(Number); let s = 0; if (p.length === 3) s = p[0] * 3600 + p[1] * 60 + p[2]; else if (p.length === 2) s = p[0] * 60 + p[1]; else if (p.length === 1 && str) s = parseFloat(str); return isNaN(s) ? 0 : s; }
-
         document.getElementById('close-modal').onclick = () => document.getElementById('file-modal').classList.add('hidden');
         document.getElementById('up-btn').onclick = () => ws.send(JSON.stringify({ action: 'browse_path', path: document.getElementById('current-path').value + '/..', id: 'nav' }));
     </script>
