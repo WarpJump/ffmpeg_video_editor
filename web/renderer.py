@@ -64,7 +64,22 @@ def seconds_to_hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:05.2f}"
 
 def get_scale_pad_filter(width: int, height: int, sar: str = "1") -> str:
+    """ Возвращает цепочку фильтров для CPU: Scale + Pad + SetSAR """
     return f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar={sar}"
+
+def get_vaapi_scale_pad_hybrid(width: int, height: int, sar: str = "1") -> str:
+    """ 
+    Возвращает цепочку фильтров для VAAPI: 
+    GPU Scale (с сохранением AR) -> Download -> CPU Pad (черные полосы) -> SetSAR 
+    """
+    # 1. scale_vaapi с force_original_aspect_ratio=decrease впишет видео в прямоугольник, не нарушая пропорций.
+    # 2. hwdownload возвращает кадр в RAM (он может быть меньше целевого размера, например 1440x1080).
+    # 3. pad (софтварный) добавляет черные полосы до целевого размера (1920x1080) и центрирует.
+    return (f"format=nv12,hwupload,"
+            f"scale_vaapi=w={width}:h={height}:force_original_aspect_ratio=decrease,"
+            f"hwdownload,format=nv12,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+            f"setsar={sar}")
 
 async def send_log(websocket, message: str, to_terminal: bool = True, msg_type: str = "log"):
     try: 
@@ -129,9 +144,10 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
         inputs.extend(['-ss', f"{seek:.4f}", '-i', c.source])
         base_idx = in_idx; in_idx += 1
         
-        # 1. Скейл ОСНОВЫ. Обязательно hwdownload перед trim (trim работает только на CPU)
+        # 1. Скейл ОСНОВЫ (Hybrid: GPU Scale + CPU Pad)
         if HW_INFO["vaapi_supported"]:
-            v_base = f"[{base_idx}:v]format=nv12,hwupload,scale_vaapi={PREVIEW_WIDTH}:{PREVIEW_HEIGHT},hwdownload,format=nv12"
+            # Используем новую функцию для умного ресайза с полосами
+            v_base = f"[{base_idx}:v]{get_vaapi_scale_pad_hybrid(PREVIEW_WIDTH, PREVIEW_HEIGHT)}"
         else:
             v_base = f"[{base_idx}:v]{get_scale_pad_filter(PREVIEW_WIDTH, PREVIEW_HEIGHT)}"
         
@@ -146,14 +162,16 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
             inputs.extend(['-ss', f"{pip_seek:.4f}", '-i', c.overlay_source])
             pip_idx = in_idx; in_idx += 1
             
+            # Для PiP (картинка в картинке) обычно не нужны черные полосы ВНУТРИ окошка PiP,
+            # но setsar=1 нужен обязательно. Пока оставим просто setsar, чтобы окно заполнялось.
+            # Если нужно сохранять AR и для PiP - можно применить ту же логику.
             pw = int(PREVIEW_WIDTH * c.overlay_w); ph = int(pw * (9/16))
             pw -= pw % 2; ph -= ph % 2
             px = int(PREVIEW_WIDTH * c.overlay_x); py = int(PREVIEW_HEIGHT * c.overlay_y)
 
-            # 2. Скейл PiP. Обязательно hwdownload для обрезки длины (trim) на CPU.
-            # Это ИСПРАВЛЯЕТ зависание видео, так как PiP будет длиться ровно needed_dur.
+            # 2. Скейл PiP
             if HW_INFO["vaapi_supported"]:
-                pip_scale = f"[{pip_idx}:v]format=nv12,hwupload,scale_vaapi={pw}:{ph},hwdownload,format=nv12"
+                pip_scale = f"[{pip_idx}:v]format=nv12,hwupload,scale_vaapi={pw}:{ph},hwdownload,format=nv12,setsar=1"
             else:
                 pip_scale = f"[{pip_idx}:v]scale={pw}:{ph}:force_original_aspect_ratio=decrease,setsar=1"
             
@@ -161,12 +179,10 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
 
             # 3. Наложение (Overlay)
             if HW_INFO["vaapi_supported"] and HW_INFO["vaapi_overlay"]:
-                # Загружаем обратно в GPU для наложения, затем сразу скачиваем для Concat/Fade
                 filters.append(f"{cur_v}format=nv12,hwupload[bg_v{i}]")
                 filters.append(f"[pip_v{i}]format=nv12,hwupload[fg_v{i}]")
-                filters.append(f"[bg_v{i}][fg_v{i}]overlay_vaapi=x={px}:y={py},hwdownload,format=nv12[ovl_v{i}]")
+                filters.append(f"[bg_v{i}][fg_v{i}]overlay_vaapi=x={px}:y={py},hwdownload,format=nv12,setsar=1[ovl_v{i}]")
             else:
-                # CPU Наложение (Используется, если VAAPI есть, но overlay_vaapi крашится)
                 filters.append(f"{cur_v}[pip_v{i}]overlay=x={px}:y={py}:eof_action=pass[ovl_v{i}]")
             
             cur_v = f"[ovl_v{i}]"
@@ -186,10 +202,8 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
             filters.append(f"{cur_a}[pip_a{i}]amix=inputs=2:duration=first:dropout_transition=2[mix_a{i}]"); cur_a = f"[mix_a{i}]"
         a_pads.append(cur_a)
 
-    # 4. Сборка всех кадров. 
     v_out_str = f"{''.join(v_pads)}concat=n={len(v_pads)}:v=1:a=0"
     if HW_INFO["vaapi_supported"]:
-        # Обязательно загружаем финальный софтверный склеенный кадр в GPU перед кодированием h264_vaapi
         v_out_str += ",format=nv12,hwupload[v_out]"
     else:
         v_out_str += "[v_out]"
@@ -198,7 +212,7 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
     filters.append(f"{''.join(a_pads)}concat=n={len(a_pads)}:v=0:a=1[a_out]")
 
     v_codec = 'h264_vaapi' if HW_INFO["vaapi_supported"] else 'libx264'
-    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'level+time'] + inputs + \
+    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'level+time+verbose'] + inputs + \
           ['-filter_complex', ";".join(filters), '-map', '[v_out]', '-map', '[a_out]',
            '-c:v', v_codec, '-preset', 'ultrafast', '-r', '20', '-crf', '28', '-g', '15', '-c:a', 'aac', '-b:a', '128k', out_file, '-y']
     
@@ -243,7 +257,8 @@ class FinalRenderer:
                 
                 # Аналогичная гибридная логика для финального рендера
                 if HW_INFO["vaapi_supported"]:
-                    vf = [f"[0:v]format=nv12,hwupload,scale_vaapi={target_w}:{target_h},hwdownload,format=nv12,fps={master['fps']}[base_v]"]
+                    # FIX: Используем scale_vaapi + CPU pad для правильного AR
+                    vf = [f"[0:v]{get_vaapi_scale_pad_hybrid(target_w, target_h)},fps={master['fps']}[base_v]"]
                     cur_v = "[base_v]"
                     if c.has_overlay:
                         ov_info = await get_video_info(c.overlay_source)
@@ -251,11 +266,11 @@ class FinalRenderer:
                         pw = int(target_w * c.overlay_w); ph = int(pw / ov_ar); pw -= pw % 2; ph -= ph % 2
                         px = int(target_w * c.overlay_x); py = int(target_h * c.overlay_y)
                         
-                        vf.append(f"[1:v]format=nv12,hwupload,scale_vaapi={pw}:{ph},hwdownload,format=nv12,fps={master['fps']}[pip_v]")
+                        vf.append(f"[1:v]format=nv12,hwupload,scale_vaapi={pw}:{ph},hwdownload,format=nv12,setsar=1,fps={master['fps']}[pip_v]")
                         if HW_INFO["vaapi_overlay"]:
                             vf.append(f"{cur_v}format=nv12,hwupload[bg_v]")
                             vf.append(f"[pip_v]format=nv12,hwupload[fg_v]")
-                            vf.append(f"[bg_v][fg_v]overlay_vaapi=x={px}:y={py},hwdownload,format=nv12[ovl_v]")
+                            vf.append(f"[bg_v][fg_v]overlay_vaapi=x={px}:y={py},hwdownload,format=nv12,setsar=1[ovl_v]")
                         else:
                             vf.append(f"{cur_v}[pip_v]overlay=x={px}:y={py}:eof_action=pass[ovl_v]")
                         cur_v = "[ovl_v]"
