@@ -91,30 +91,44 @@ async def run_async_command(websocket, command: List[str], title: str = "", is_p
     if title: await send_log(websocket, f"--- {title} ---", msg_type="header")
     cmd = [str(x) for x in command]
     
-    with open(FFMPEG_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"\n{'='*20} {title.upper()} {'='*20}\nCOMMAND: {' '.join(cmd)}\n")
+    # Лог в терминал сервера
+    log_debug(f"[FFmpeg] Start: {title}")
+    start_time = asyncio.get_event_loop().time()
 
-    process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    if is_preview: await send_log(websocket, f"Рендеринг...", to_terminal=False, msg_type="progress")
-
-    while True:
-        chunk = await process.stdout.read(1024)
-        if not chunk: break
-        decoded = chunk.decode('utf-8', errors='ignore')
-        with open(FFMPEG_LOG_FILE, "a", encoding="utf-8") as f: f.write(decoded)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd, 
+            stdout=asyncio.subprocess.PIPE, 
+            stderr=asyncio.subprocess.STDOUT
+        )
         
-        if not is_preview and ("frame=" in decoded or "time=" in decoded):
-            time_m = re.search(r'time=([\d:.]+)', decoded)
-            fps_m = re.search(r'fps=\s*([\d.]+)', decoded)
-            if time_m:
-                time_str = time_m.group(1)
-                fps_str = fps_m.group(1) if fps_m else "??"
-                await send_log(websocket, f"Обработка: {time_str} | Скорость: {fps_str} fps", to_terminal=False, msg_type="progress")
+        while True:
+            chunk = await process.stdout.read(1024)
+            if not chunk: break
+            decoded = chunk.decode('utf-8', errors='ignore')
+            
+            # Пишем только в файл, чтобы не спамить в терминал сервера
+            with open(FFMPEG_LOG_FILE, "a", encoding="utf-8") as f: f.write(decoded)
+            
+            # Прогресс отправляем в UI
+            if not is_preview and ("frame=" in decoded or "time=" in decoded):
+                time_m = re.search(r'time=([\d:.]+)', decoded)
+                if time_m:
+                    await send_log(websocket, f"Обработка: {time_m.group(1)}", to_terminal=False, msg_type="progress")
 
-    await process.wait()
-    if process.returncode != 0:
-        await send_log(websocket, f"\n[!] ОШИБКА FFmpeg", msg_type="log")
-        raise subprocess.CalledProcessError(process.returncode, " ".join(cmd))
+        await process.wait()
+        end_time = asyncio.get_event_loop().time()
+        log_debug(f"[FFmpeg] Done: {title} (Заняло: {end_time - start_time:.2f}s)")
+
+    except asyncio.CancelledError:
+        # Это происходит, когда мы вызываем task.cancel() в main.py
+        if process:
+            try:
+                process.terminate()
+                await process.wait()
+            except: pass
+        log_debug(f"[FFmpeg] KILLED: {title} (Пользователь переключил действие)")
+        raise # Обязательно пробрасываем дальше
 
 async def render_preview_chunk(websocket, timeline: List[VideoClip], request_time: float) -> Tuple[Optional[str], float]:
     tmp_dir = "/dev/shm" if os.path.exists("/dev/shm") else "."
