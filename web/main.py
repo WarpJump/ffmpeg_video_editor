@@ -1,5 +1,6 @@
+
 ## @file main.py
-# @brief Точка входа в приложение.
+# @brief Точка входа в приложение (FIX: Разделение очередей Seek и Preload).
 
 import asyncio
 import http
@@ -17,13 +18,13 @@ from urllib.parse import urlparse, parse_qs
 from config import *
 from timeline import TimelineBuilder
 from renderer import FinalRenderer, render_preview_chunk, send_log, detect_hw_support 
-import hardware # Важно для прогрева кэша
+import hardware
 
-# Словарь для хранения активных задач превью: {websocket_id: asyncio.Task}
-active_preview_tasks = {}
+# FIX: Храним задачи раздельно для Seek (блокирующие) и Preload (фоновые)
+# Структура: { ws_id: { "seek": Task|None, "preload": Task|None } }
+client_tasks = {}
 
 async def handle_video_request(path, request_headers):
-    # ... (код без изменений) ...
     query = parse_qs(urlparse(path).query); abs_path = query.get('path', [None])[0]
     if not abs_path or not os.path.exists(abs_path): return (http.HTTPStatus.NOT_FOUND, [], b"Not found")
     file_size = os.path.getsize(abs_path); range_header = request_headers.get("Range")
@@ -39,7 +40,9 @@ async def websocket_handler(websocket):
     ws_id = id(websocket)
     log_debug(f"Клиент подключился (ID: {ws_id})")
     
-    # Pre-warm hardware check on connection
+    # Инициализация хранилища задач для клиента
+    client_tasks[ws_id] = {"seek": None, "preload": None}
+    
     asyncio.create_task(hardware.get_hardware_config())
     
     default_intro = os.path.join(DEFAULT_INTRO_DIR, f"{INTRO_BASE_NAME}_2k.mkv")
@@ -58,7 +61,7 @@ async def websocket_handler(websocket):
             data = json.loads(message); action, params = data.get("action"), data.get("params", {})
             
             if action == "generate_preview_map":
-                log_debug("[WS] Запрос карты превью")
+                # Карта превью - легкая операция, не требует отмены
                 timeline_cache = await TimelineBuilder(params, "/dev/shm" if os.path.exists("/dev/shm") else ".").build()
                 total = sum(c.duration for c in timeline_cache)
                 clips_data = [c.to_dict() for c in timeline_cache]
@@ -70,17 +73,18 @@ async def websocket_handler(websocket):
                 }))
                 
             elif action == "generate_preview_fragment":
-                if ws_id in active_preview_tasks:
-                    old_task = active_preview_tasks[ws_id]
-                    if not old_task.done():
-                        # log_debug(f"[WS] Отмена старой задачи превью")
-                        old_task.cancel()
-                        try: await old_task
-                        except asyncio.CancelledError: pass
-
                 request_id = data.get("request_id") 
                 is_preload = data.get("is_preload", False)
-                
+                task_type = "preload" if is_preload else "seek"
+
+                # FIX: Отменяем только задачу ТОГО ЖЕ типа.
+                # Preload не должен отменять Seek. Seek может отменять старый Seek.
+                current_task = client_tasks[ws_id][task_type]
+                if current_task and not current_task.done():
+                    current_task.cancel()
+                    try: await current_task
+                    except asyncio.CancelledError: pass
+
                 async def preview_task_wrapper():
                     try:
                         timeline_cache = await TimelineBuilder(params, "/dev/shm" if os.path.exists("/dev/shm") else ".").build()
@@ -105,13 +109,12 @@ async def websocket_handler(websocket):
                         log_debug(f"[Task] Ошибка превью: {e}")
                         import traceback; traceback.print_exc()
 
-                task = asyncio.create_task(preview_task_wrapper())
-                active_preview_tasks[ws_id] = task
+                new_task = asyncio.create_task(preview_task_wrapper())
+                client_tasks[ws_id][task_type] = new_task
 
             elif action == "process":
                 segments = params.get('segments_list', [])
                 video1_path = segments[0].get('video') if segments else params.get('video1')
-                
                 if not video1_path:
                     await send_log(websocket, "Ошибка: Нет видео для обработки!", msg_type="log")
                     continue
@@ -143,9 +146,11 @@ async def websocket_handler(websocket):
         import traceback; err = traceback.format_exc(); log_debug(f"CRITICAL: {err}")
         await send_log(websocket, f"Критическая ошибка: {e}")
     finally:
-        if ws_id in active_preview_tasks:
-            t = active_preview_tasks.pop(ws_id)
-            if not t.done(): t.cancel()
+        # Очистка задач при отключении
+        if ws_id in client_tasks:
+            for t in client_tasks[ws_id].values():
+                if t and not t.done(): t.cancel()
+            del client_tasks[ws_id]
 
 async def http_server_handler(path, request_headers):
     if "websocket" in request_headers.get("Upgrade", "").lower(): return None
@@ -157,12 +162,9 @@ async def http_server_handler(path, request_headers):
     elif path == '/style.css': return (http.HTTPStatus.OK, {"Content-Type": "text/css"}, open(os.path.join(script_dir, "style.css"), "rb").read())
     return (http.HTTPStatus.NOT_FOUND, [], b"Not Found")
 
-
 async def main():
     log_debug(f"Сервер запущен. Порт {SERVER_PORT}. Лог: {APP_LOG_FILE}")
-    # НОВОЕ: Детекция VAAPI перед запуском сервера
     await detect_hw_support()
-    
     async with serve(websocket_handler, "0.0.0.0", SERVER_PORT, process_request=http_server_handler):
         print(f"Server: http://127.0.0.1:{SERVER_PORT}")
         webbrowser.open_new_tab(f"http://127.0.0.1:{SERVER_PORT}")

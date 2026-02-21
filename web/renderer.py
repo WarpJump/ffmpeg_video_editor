@@ -198,9 +198,9 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
     filters.append(f"{''.join(a_pads)}concat=n={len(a_pads)}:v=0:a=1[a_out]")
 
     v_codec = 'h264_vaapi' if HW_INFO["vaapi_supported"] else 'libx264'
-    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info'] + inputs + \
+    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'level+time'] + inputs + \
           ['-filter_complex', ";".join(filters), '-map', '[v_out]', '-map', '[a_out]',
-           '-c:v', v_codec, '-preset', 'ultrafast', '-crf', '28', '-g', '15', '-c:a', 'aac', '-b:a', '128k', out_file, '-y']
+           '-c:v', v_codec, '-preset', 'ultrafast', '-r', '20', '-crf', '28', '-g', '15', '-c:a', 'aac', '-b:a', '128k', out_file, '-y']
     
     await run_async_command(websocket, cmd, f"TRANSCODING ({seconds_to_hms(request_time)})", is_preview=True)
     return out_file, request_time
@@ -233,7 +233,7 @@ class FinalRenderer:
                 save_dir = self.out_dir if c.duration > 60 else self.tmp_dir
                 out = os.path.join(save_dir, f"compat_{i}_{str(uuid.uuid4())[:4]}.mkv"); self.temp_files.append(out)
                 
-                cmd = []
+                cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-stats']
                 if HW_INFO["vaapi_supported"]:
                     cmd.extend(['-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va'])
                 

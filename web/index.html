@@ -2,26 +2,17 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Видео Редактор v46 (Hardware Accel + UI Fix)</title>
+    <title>Видео Редактор v47 (Stable Async)</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
     <style>
         .video-container { position: relative; width: 100%; background: black; aspect-ratio: 16/9; overflow: hidden; }
         .video-container video { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
-        
-        /* Interactive PiP Bounding Box */
         #pip-overlay-box {
-            position: absolute;
-            border: 2px dashed #00bbff;
-            background: rgba(0, 187, 255, 0.2);
-            cursor: move;
-            display: none;
-            box-sizing: border-box;
-            z-index: 50;
+            position: absolute; border: 2px dashed #00bbff; background: rgba(0, 187, 255, 0.2); cursor: move;
+            display: none; box-sizing: border-box; z-index: 50;
         }
-        .pip-handle {
-            position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid #00bbff; border-radius: 50%;
-        }
+        .pip-handle { position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid #00bbff; border-radius: 50%; }
         .handle-se { bottom: -6px; right: -6px; cursor: se-resize; }
         .pip-hint { position: absolute; top: -25px; left: 0; background: rgba(0,0,0,0.7); color: white; padding: 2px 5px; font-size: 11px; white-space: nowrap; border-radius: 3px; }
     </style>
@@ -30,7 +21,6 @@
     <h1>FFmaximum</h1>
     <div class="container">
         <div class="form-column">
-            
             <fieldset>
                 <legend>Настройки</legend>
                 <div><input type="checkbox" id="use_ram" checked><label for="use_ram"> RAM-диск (/dev/shm)</label></div>
@@ -57,11 +47,9 @@
                         </div>
                     </div>
                 </div>
-
                 <div id="segments-container"></div>
                 <button type="button" id="add-seg-btn" onclick="addSegment()" style="background: #27ae60; color: white; font-weight: bold; padding: 10px;">+ Добавить следующий фрагмент</button>
             </div>
-
             <button type="button" id="submitBtn" class="action-btn" onclick="submitForm()">Начать Обработку</button>
         </div>
 
@@ -69,17 +57,13 @@
             <h2>Предпросмотр</h2>
             <div class="video-container" id="video-wrapper">
                 <div id="loading-overlay" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); color:white; justify-content:center; align-items:center; z-index: 100;">Загрузка...</div>
-                
                 <video id="videoPlayerA" playsinline></video>
                 <video id="videoPlayerB" style="display:none;" playsinline></video>
-                
-                <!-- Bounding Box -->
                 <div id="pip-overlay-box">
                     <div class="pip-hint" id="pip-hint-text">Камера</div>
                     <div class="pip-handle handle-se" id="pip-handle-se"></div>
                 </div>
             </div>
-            
             <div class="virtual-player-container">
                 <div class="player-controls">
                     <button id="v-play-btn">▶</button>
@@ -90,12 +74,12 @@
                     <div id="timeline-tracks"></div>
                 </div>
             </div>
-
             <h3>Лог</h3>
             <pre id="log-output" style="height:300px; overflow-y:scroll; background:#1b1e20; padding:10px; color:#ccc; font-family: monospace; font-size: 0.9em;"></pre>
         </div>
     </div>
-
+    
+    <!-- Modal and Scripts -->
     <div id="file-modal" class="modal-backdrop hidden">
         <div class="modal-content">
             <h3>Выбор файла</h3>
@@ -117,12 +101,10 @@
         let segments = [];
         let globalSettings = { introPath: '', outputDir: '', volume: 1.5, useRam: true };
         let currentBrowseId = null;
-        
         let activePipSegmentId = null;
         let dragDebounceTimer = null;
-        let lastRequestId = 0; 
+        let lastSeekRequestId = 0; // FIX: Глобальный счетчик только для SEEK запросов
 
-        // Глобальный объект для управления воспроизведением
         const streamer = {
             totalDuration: 0,
             isPlaying: false,
@@ -132,7 +114,7 @@
             nextChunkStartTime: -1,   
             isLoading: false,         
             nextChunkRequested: false,
-            clips: [], // Метаданные таймлайна
+            clips: [],
             
             init: function() {
                 this.currentPlayer = document.getElementById('videoPlayerA');
@@ -166,30 +148,47 @@
             
             requestChunk: function(time, isPreload) {
                 if (time >= this.totalDuration) return;
+                
                 if (isPreload) {
                     if (this.nextChunkRequested) return;
                     this.nextChunkStartTime = time; 
                     this.nextChunkRequested = true;
+                    // FIX: Preload не увеличивает счетчик lastSeekRequestId!
+                    // Отправляем -1 или любой ID, который не будет проверяться строго.
+                    ws.send(JSON.stringify({ 
+                        action: 'generate_preview_fragment', 
+                        start_time: time, 
+                        exact_time: time, 
+                        params: gatherParams(),
+                        request_id: -1, // Dummy ID
+                        is_preload: true
+                    }));
+                } else {
+                    // Это Seek. Увеличиваем счетчик версии запроса.
+                    lastSeekRequestId++;
+                    ws.send(JSON.stringify({ 
+                        action: 'generate_preview_fragment', 
+                        start_time: time, 
+                        exact_time: time, 
+                        params: gatherParams(),
+                        request_id: lastSeekRequestId,
+                        is_preload: false
+                    }));
                 }
-                lastRequestId++;
-                ws.send(JSON.stringify({ 
-                    action: 'generate_preview_fragment', 
-                    start_time: time, 
-                    exact_time: time, 
-                    params: gatherParams(),
-                    request_id: lastRequestId,
-                    is_preload: isPreload
-                }));
             },
             
             onChunkReady: function(data) {
-                if (data.request_id && data.request_id < lastRequestId) return;
+                // FIX: Проверяем актуальность только для SEEK ответов.
+                // Если это Seek, и его ID меньше текущего глобального - значит пользователь
+                // уже кликнул в другое место, и этот ответ устарел.
+                if (!data.is_preload) {
+                    if (data.request_id < lastSeekRequestId) return;
+                }
 
                 const url = `http://${window.location.host}/video?path=${encodeURIComponent(data.relative_path)}&t=${Date.now()}`;
                 const chunkStart = data.start_time; 
-                const isPreload = data.is_preload;
                 
-                if (this.isLoading && !isPreload) {
+                if (this.isLoading && !data.is_preload) {
                     document.getElementById('loading-overlay').style.display = 'none';
                     this.isLoading = false;
                     this.currentChunkStartTime = chunkStart;
@@ -202,6 +201,7 @@
                     };
                     this.currentPlayer.addEventListener('loadedmetadata', onLoaded);
                 } else {
+                     // Это Preload или запоздалый ответ, который мы всё равно можем использовать для буфера
                      if (Math.abs(chunkStart - this.nextChunkStartTime) < 0.5) {
                          this.nextPlayer.src = url; 
                          this.nextPlayer.load();
@@ -224,7 +224,6 @@
                     document.getElementById('v-time').textContent = `${formatTime(globalTime)} / ${formatTime(this.totalDuration)}`;
                 }
 
-                // PiP рамка: обновляем ТОЛЬКО если пользователь не тащит её прямо сейчас
                 const activeClip = this.clips.find(c => globalTime >= c.global_start && globalTime < (c.global_start + c.duration));
                 if (activeClip && activeClip.has_overlay && activeClip.segment_id && !isDraggingBox && !isResizingBox) {
                     showPipBox(activeClip.segment_id, activeClip.overlay_coords);
@@ -232,15 +231,13 @@
                     if (!isDraggingBox && !isResizingBox) hidePipBox();
                 }
 
-                // Preload
                 const duration = this.currentPlayer.duration;
                 if (isFinite(duration) && duration > 0) {
                     const remaining = duration - playerTime;
-                    if (remaining < 3 && !this.nextChunkRequested && (this.currentChunkStartTime + duration) < this.totalDuration - 0.5) {
+                    // Запрашиваем предзагрузку, только если осталось мало времени
+                    if (remaining < 5 && !this.nextChunkRequested && (this.currentChunkStartTime + duration) < this.totalDuration - 0.5) {
                         const nextStart = this.currentChunkStartTime + duration;
-                        if (Math.abs(nextStart - this.nextChunkStartTime) > 0.5) {
-                            this.requestChunk(nextStart, true);
-                        }
+                        this.requestChunk(nextStart, true);
                     }
                 }
             },
@@ -276,14 +273,52 @@
             }
         };
 
-        window.onload = () => {
-            connectWS();
-            addSegment();
-            streamer.init();
-            setupTimelineInteraction();
-            setupPipInteraction();
-        };
+        // --- Standard helper functions from previous code ---
+        window.onload = () => { connectWS(); addSegment(); streamer.init(); setupTimelineInteraction(); setupPipInteraction(); };
+        
+        // ... (browse, updateVol, etc. same as before) ...
+        
+        function connectWS() {
+            ws = new WebSocket('ws://' + window.location.host);
+            ws.onopen = () => console.log('WS Connected');
+            ws.onmessage = (e) => handleWSMessage(JSON.parse(e.data));
+            ws.onclose = () => setTimeout(connectWS, 2000);
+        }
 
+        function handleWSMessage(data) {
+            if (data.action === 'log') {
+                const log = document.getElementById('log-output');
+                if (data.type === 'progress') {
+                    const lines = log.innerHTML.split('\n');
+                    if (lines.length > 1 && lines[lines.length - 2].includes('id="cur-progress"')) {
+                        lines[lines.length - 2] = `<span id="cur-progress">${data.message}</span>`;
+                        log.innerHTML = lines.join('\n');
+                    } else log.innerHTML += `<span id="cur-progress">${data.message}</span>\n`;
+                } else {
+                    let style = data.type === 'header' ? 'style="color: #00bbff; font-weight: bold;"' : "";
+                    log.innerHTML += `<span ${style}>${data.message}</span>\n`;
+                }
+                log.scrollTop = log.scrollHeight;
+            } else if (data.action === 'config_info') {
+                if (data.default_intro) { globalSettings.introPath = data.default_intro; document.getElementById('intro_file_path').textContent = data.default_intro + " (Стандартное)"; }
+                document.getElementById('output_dir_path').textContent = data.default_output;
+                globalSettings.outputDir = data.default_output;
+            } else if (data.action === 'browse_result') { renderFileList(data); }
+            else if (data.action === 'path_resolved') { applySelectedPath(data.full_path); }
+            else if (data.action === 'preview_map_ready') {
+                streamer.totalDuration = data.total_duration;
+                streamer.clips = data.clips;
+                renderTimelineVisual(data.clips, data.total_duration);
+                document.querySelector('.virtual-player-container').style.display = 'block'; 
+                document.getElementById('v-time').textContent = `00:00 / ${formatTime(data.total_duration)}`;
+            } else if (data.action === 'preview_fragment_ready') { streamer.onChunkReady(data); }
+            else if (data.action === 'finished') {
+                document.getElementById('submitBtn').disabled = false;
+                document.getElementById('submitBtn').textContent = 'Начать Обработку';
+            }
+        }
+        
+        // (Rest of UI functions: addSegment, removeSegment, togglePiP, updateSeg, gatherParams, etc. - KEEP AS IS)
         function addSegment() {
             if (segments.length >= 10) return alert("Максимум 10 сегментов");
             const id = Date.now().toString();
@@ -368,7 +403,6 @@
         function selectFile(type) { browse(null, type === 'intro_file' ? 'intro' : 'output'); }
         function selectDirectory(type) { browse(null, 'output'); }
 
-        // --- Управление Bounding Box (Drag & Resize) ---
         const pipBox = document.getElementById('pip-overlay-box');
         const videoWrapper = document.getElementById('video-wrapper');
         let isDraggingBox = false; let isResizingBox = false;
@@ -384,41 +418,22 @@
             pipBox.style.height = (coords.w * 100) + '%';
             document.getElementById('pip-hint-text').textContent = `Камера (Сегм ${segments.findIndex(s=>s.id===segId)+1})`;
         }
-
-        function hidePipBox() {
-            activePipSegmentId = null;
-            pipBox.style.display = 'none';
-        }
-
-        // --- ОБНОВЛЕННАЯ ЛОГИКА ДЛЯ МГНОВЕННОЙ РЕАКЦИИ UI ---
+        function hidePipBox() { activePipSegmentId = null; pipBox.style.display = 'none'; }
+        
         function updateLocalStateFromDom() {
             if (!activePipSegmentId) return;
-            
-            // 1. Считываем текущее положение из DOM
             const x = parseFloat(pipBox.style.left) / 100;
             const y = parseFloat(pipBox.style.top) / 100;
             const w = parseFloat(pipBox.style.width) / 100;
-
-            // 2. Обновляем segments (источник для запросов к бекенду)
             const seg = segments.find(s => s.id === activePipSegmentId);
-            if (seg) {
-                seg.pip_x = x; seg.pip_y = y; seg.pip_w = w;
-            }
-
-            // 3. ВАЖНО: Обновляем streamer.clips (источник для onTimeUpdate)
-            // Это "Optimistic Update" - мы говорим плееру "новые координаты ТАКИЕ", не дожидаясь ответа сервера
+            if (seg) { seg.pip_x = x; seg.pip_y = y; seg.pip_w = w; }
             const activeClip = streamer.clips.find(c => c.segment_id === activePipSegmentId);
-            if (activeClip && activeClip.overlay_coords) {
-                activeClip.overlay_coords.x = x;
-                activeClip.overlay_coords.y = y;
-                activeClip.overlay_coords.w = w;
-            }
+            if (activeClip && activeClip.overlay_coords) { activeClip.overlay_coords.x = x; activeClip.overlay_coords.y = y; activeClip.overlay_coords.w = w; }
         }
 
         function triggerUpdateDebounced() {
             if (dragDebounceTimer) clearTimeout(dragDebounceTimer);
             dragDebounceTimer = setTimeout(() => {
-                // Отправка на сервер (координаты уже в segments)
                 const currentTimeExact = streamer.currentChunkStartTime + streamer.currentPlayer.currentTime;
                 ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() }));
                 streamer.seek(currentTimeExact);
@@ -427,92 +442,25 @@
 
         function setupPipInteraction() {
             const handle = document.getElementById('pip-handle-se');
-            
-            pipBox.addEventListener('mousedown', (e) => {
-                if(e.target === handle) return; 
-                isDraggingBox = true;
-                startX = e.clientX; startY = e.clientY;
-                startLeft = parseFloat(pipBox.style.left) || 0; startTop = parseFloat(pipBox.style.top) || 0;
-            });
-            
-            handle.addEventListener('mousedown', (e) => {
-                isResizingBox = true; e.stopPropagation();
-                startX = e.clientX; startWidth = parseFloat(pipBox.style.width) || 0;
-            });
-
+            pipBox.addEventListener('mousedown', (e) => { if(e.target === handle) return; isDraggingBox = true; startX = e.clientX; startY = e.clientY; startLeft = parseFloat(pipBox.style.left) || 0; startTop = parseFloat(pipBox.style.top) || 0; });
+            handle.addEventListener('mousedown', (e) => { isResizingBox = true; e.stopPropagation(); startX = e.clientX; startWidth = parseFloat(pipBox.style.width) || 0; });
             document.addEventListener('mousemove', (e) => {
                 if (isDraggingBox) {
                     const rect = videoWrapper.getBoundingClientRect();
-                    const dx = ((e.clientX - startX) / rect.width) * 100;
-                    const dy = ((e.clientY - startY) / rect.height) * 100;
+                    const dx = ((e.clientX - startX) / rect.width) * 100; const dy = ((e.clientY - startY) / rect.height) * 100;
                     let newLeft = Math.max(0, Math.min(startLeft + dx, 100 - parseFloat(pipBox.style.width)));
                     let newTop = Math.max(0, Math.min(startTop + dy, 100 - parseFloat(pipBox.style.height)));
                     pipBox.style.left = newLeft + '%'; pipBox.style.top = newTop + '%';
-                    
-                    // МГНОВЕННОЕ обновление состояния
-                    updateLocalStateFromDom();
-                    triggerUpdateDebounced();
-
+                    updateLocalStateFromDom(); triggerUpdateDebounced();
                 } else if (isResizingBox) {
                     const rect = videoWrapper.getBoundingClientRect();
                     const dx = ((e.clientX - startX) / rect.width) * 100;
                     let newWidth = Math.max(5, Math.min(startWidth + dx, 100 - parseFloat(pipBox.style.left))); 
                     pipBox.style.width = newWidth + '%'; pipBox.style.height = newWidth + '%'; 
-                    
-                    // МГНОВЕННОЕ обновление состояния
-                    updateLocalStateFromDom();
-                    triggerUpdateDebounced();
+                    updateLocalStateFromDom(); triggerUpdateDebounced();
                 }
             });
-
-            document.addEventListener('mouseup', () => {
-                if (isDraggingBox || isResizingBox) {
-                    // Финальное обновление перед выключением флага
-                    updateLocalStateFromDom();
-                    isDraggingBox = false; isResizingBox = false;
-                    triggerUpdateDebounced();
-                }
-            });
-        }
-
-        function connectWS() {
-            ws = new WebSocket('ws://' + window.location.host);
-            ws.onopen = () => console.log('WS Connected');
-            ws.onmessage = (e) => handleWSMessage(JSON.parse(e.data));
-            ws.onclose = () => setTimeout(connectWS, 2000);
-        }
-
-        function handleWSMessage(data) {
-            if (data.action === 'log') {
-                const log = document.getElementById('log-output');
-                if (data.type === 'progress') {
-                    const lines = log.innerHTML.split('\n');
-                    if (lines.length > 1 && lines[lines.length - 2].includes('id="cur-progress"')) {
-                        lines[lines.length - 2] = `<span id="cur-progress">${data.message}</span>`;
-                        log.innerHTML = lines.join('\n');
-                    } else log.innerHTML += `<span id="cur-progress">${data.message}</span>\n`;
-                } else {
-                    let style = data.type === 'header' ? 'style="color: #00bbff; font-weight: bold;"' : "";
-                    log.innerHTML += `<span ${style}>${data.message}</span>\n`;
-                }
-                log.scrollTop = log.scrollHeight;
-            } else if (data.action === 'config_info') {
-                if (data.default_intro) { globalSettings.introPath = data.default_intro; document.getElementById('intro_file_path').textContent = data.default_intro + " (Стандартное)"; }
-                document.getElementById('output_dir_path').textContent = data.default_output;
-                globalSettings.outputDir = data.default_output;
-            } else if (data.action === 'browse_result') { renderFileList(data); }
-            else if (data.action === 'path_resolved') { applySelectedPath(data.full_path); }
-            else if (data.action === 'preview_map_ready') {
-                streamer.totalDuration = data.total_duration;
-                streamer.clips = data.clips;
-                renderTimelineVisual(data.clips, data.total_duration);
-                document.querySelector('.virtual-player-container').style.display = 'block'; 
-                document.getElementById('v-time').textContent = `00:00 / ${formatTime(data.total_duration)}`;
-            } else if (data.action === 'preview_fragment_ready') { streamer.onChunkReady(data); }
-            else if (data.action === 'finished') {
-                document.getElementById('submitBtn').disabled = false;
-                document.getElementById('submitBtn').textContent = 'Начать Обработку';
-            }
+            document.addEventListener('mouseup', () => { if (isDraggingBox || isResizingBox) { updateLocalStateFromDom(); isDraggingBox = false; isResizingBox = false; triggerUpdateDebounced(); } });
         }
 
         function gatherParams() {
@@ -524,13 +472,7 @@
                 volume: globalSettings.volume,
                 segments_list: segments.map(s => {
                     const pipEnabled = document.getElementById(`pip-enable-${s.id}`)?.checked;
-                    const pipData = pipEnabled ? {
-                        video: s.overlayPath,
-                        start: s.pip_start,
-                        end: s.pip_end,
-                        x: s.pip_x, y: s.pip_y, w: s.pip_w,
-                        mix_audio: document.getElementById(`pip-audio-${s.id}`).checked
-                    } : null;
+                    const pipData = pipEnabled ? { video: s.overlayPath, start: s.pip_start, end: s.pip_end, x: s.pip_x, y: s.pip_y, w: s.pip_w, mix_audio: document.getElementById(`pip-audio-${s.id}`).checked } : null;
                     return { id: s.id, video: s.videoPath, audio: s.audioPath || s.videoPath, start: s.start, end: s.end, overlay: pipData };
                 })
             };
@@ -542,84 +484,12 @@
             ws.send(JSON.stringify({ action: 'process', params: gatherParams() }));
         }
 
-        function requestPreviewMap() { 
-            if (segments.some(s => s.videoPath)) ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() })); 
-        }
-
-        function renderFileList(data) {
-            const list = document.getElementById('file-list'); list.innerHTML = '';
-            document.getElementById('current-path').value = data.path;
-            if (data.path !== '/') {
-                const up = document.createElement('div'); up.className = 'file-entry'; up.textContent = '.. (Назад)';
-                up.onclick = () => ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/..', id: 'nav' }));
-                list.appendChild(up);
-            }
-            data.entries.forEach(entry => {
-                const div = document.createElement('div'); div.className = 'file-entry'; div.textContent = (entry.type === 'dir' ? '📁 ' : '📄 ') + entry.name;
-                div.onclick = () => {
-                    if (entry.type === 'dir') ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/' + entry.name, id: 'nav' }));
-                    else ws.send(JSON.stringify({ action: 'resolve_path', path: data.path + '/' + entry.name, id: 'file' }));
-                };
-                list.appendChild(div);
-            });
-            document.getElementById('select-dir-confirm').onclick = () => ws.send(JSON.stringify({ action: 'resolve_path', path: data.path, id: 'dir' }));
-        }
-
-        function applySelectedPath(path) {
-            document.getElementById('file-modal').classList.add('hidden');
-            if (currentBrowseId.type === 'intro') { globalSettings.introPath = path; document.getElementById('intro_file_path').textContent = path; }
-            else if (currentBrowseId.type === 'output') { globalSettings.outputDir = path; document.getElementById('output_dir_path').textContent = path; }
-            else {
-                const seg = segments.find(s => s.id === currentBrowseId.segId);
-                if (seg) { 
-                    if (currentBrowseId.type === 'video') { seg.videoPath = path; document.getElementById(`path-video-${seg.id}`).textContent = path; } 
-                    else if (currentBrowseId.type === 'overlay') { seg.overlayPath = path; document.getElementById(`path-overlay-${seg.id}`).textContent = path; }
-                }
-            }
-            requestPreviewMap();
-        }
-
-        function renderTimelineVisual(clips, totalDuration) {
-            const trackContainer = document.getElementById('timeline-tracks'); trackContainer.innerHTML = '';
-            clips.forEach(clip => {
-                const block = document.createElement('div');
-                block.className = `timeline-block color-${clip.color}`;
-                if(clip.has_overlay) block.style.backgroundColor = 'var(--accent-pink)';
-                block.style.width = (clip.duration / totalDuration) * 100 + '%';
-                block.title = `${clip.name} (${formatTime(clip.duration)})`;
-                block.innerHTML = `<span class="block-label">${clip.name}</span>`;
-                trackContainer.appendChild(block);
-            });
-        }
-
-        function setupTimelineInteraction() {
-            const timeline = document.getElementById('timeline-visual');
-            const handleScrub = (e) => {
-                const rect = timeline.getBoundingClientRect();
-                const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-                const time = (x / rect.width) * streamer.totalDuration;
-                if (e.type === 'click' || e.type === 'mouseup') streamer.seek(time);
-            };
-            timeline.addEventListener('click', handleScrub);
-            let isDragging = false;
-            timeline.addEventListener('mousedown', () => isDragging = true);
-            document.addEventListener('mouseup', (e) => { if(isDragging) { isDragging = false; handleScrub(e); } });
-        }
-        
-        function previewJump(segId, field) {
-            const segIdx = segments.findIndex(s => s.id === segId);
-            const targetNameStart = `Seg${segIdx + 1}`;
-            const targetClip = streamer.clips.find(c => c.name.startsWith(targetNameStart));
-            if (targetClip) {
-                let time = targetClip.global_start;
-                if (field === 'end') {
-                    const lastClip = streamer.clips.slice().reverse().find(c => c.name.startsWith(targetNameStart));
-                    if (lastClip) time = lastClip.global_start + lastClip.duration - 5; 
-                }
-                streamer.seek(time);
-            }
-        }
-        
+        function requestPreviewMap() { if (segments.some(s => s.videoPath)) ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() })); }
+        function renderFileList(data) { const list = document.getElementById('file-list'); list.innerHTML = ''; document.getElementById('current-path').value = data.path; if (data.path !== '/') { const up = document.createElement('div'); up.className = 'file-entry'; up.textContent = '.. (Назад)'; up.onclick = () => ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/..', id: 'nav' })); list.appendChild(up); } data.entries.forEach(entry => { const div = document.createElement('div'); div.className = 'file-entry'; div.textContent = (entry.type === 'dir' ? '📁 ' : '📄 ') + entry.name; div.onclick = () => { if (entry.type === 'dir') ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/' + entry.name, id: 'nav' })); else ws.send(JSON.stringify({ action: 'resolve_path', path: data.path + '/' + entry.name, id: 'file' })); }; list.appendChild(div); }); document.getElementById('select-dir-confirm').onclick = () => ws.send(JSON.stringify({ action: 'resolve_path', path: data.path, id: 'dir' })); }
+        function applySelectedPath(path) { document.getElementById('file-modal').classList.add('hidden'); if (currentBrowseId.type === 'intro') { globalSettings.introPath = path; document.getElementById('intro_file_path').textContent = path; } else if (currentBrowseId.type === 'output') { globalSettings.outputDir = path; document.getElementById('output_dir_path').textContent = path; } else { const seg = segments.find(s => s.id === currentBrowseId.segId); if (seg) { if (currentBrowseId.type === 'video') { seg.videoPath = path; document.getElementById(`path-video-${seg.id}`).textContent = path; } else if (currentBrowseId.type === 'overlay') { seg.overlayPath = path; document.getElementById(`path-overlay-${seg.id}`).textContent = path; } } } requestPreviewMap(); }
+        function renderTimelineVisual(clips, totalDuration) { const trackContainer = document.getElementById('timeline-tracks'); trackContainer.innerHTML = ''; clips.forEach(clip => { const block = document.createElement('div'); block.className = `timeline-block color-${clip.color}`; if(clip.has_overlay) block.style.backgroundColor = 'var(--accent-pink)'; block.style.width = (clip.duration / totalDuration) * 100 + '%'; block.title = `${clip.name} (${formatTime(clip.duration)})`; block.innerHTML = `<span class="block-label">${clip.name}</span>`; trackContainer.appendChild(block); }); }
+        function setupTimelineInteraction() { const timeline = document.getElementById('timeline-visual'); const handleScrub = (e) => { const rect = timeline.getBoundingClientRect(); const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width)); const time = (x / rect.width) * streamer.totalDuration; if (e.type === 'click' || e.type === 'mouseup') streamer.seek(time); }; timeline.addEventListener('click', handleScrub); let isDragging = false; timeline.addEventListener('mousedown', () => isDragging = true); document.addEventListener('mouseup', (e) => { if(isDragging) { isDragging = false; handleScrub(e); } }); }
+        function previewJump(segId, field) { const segIdx = segments.findIndex(s => s.id === segId); const targetNameStart = `Seg${segIdx + 1}`; const targetClip = streamer.clips.find(c => c.name.startsWith(targetNameStart)); if (targetClip) { let time = targetClip.global_start; if (field === 'end') { const lastClip = streamer.clips.slice().reverse().find(c => c.name.startsWith(targetNameStart)); if (lastClip) time = lastClip.global_start + lastClip.duration - 5; } streamer.seek(time); } }
         function formatTime(s) { const m = Math.floor(s/60); const sec = Math.floor(s%60); return `${m}:${sec.toString().padStart(2,'0')}`; }
         document.getElementById('close-modal').onclick = () => document.getElementById('file-modal').classList.add('hidden');
         document.getElementById('up-btn').onclick = () => ws.send(JSON.stringify({ action: 'browse_path', path: document.getElementById('current-path').value + '/..', id: 'nav' }));
