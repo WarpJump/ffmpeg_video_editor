@@ -47,6 +47,7 @@ const streamer = {
     currentPlayer: null,
     nextPlayer: null,
     currentChunkStartTime: 0,
+    nextChunkStartTime: -1, // ДОБАВЛЕНО: хранилище времени предзагрузки
     isLoading: false,
     nextChunkRequested: false, // Флаг "Запрос отправлен, но ответ еще не обработан"
     clips: [],
@@ -84,6 +85,7 @@ const streamer = {
 
         // Сброс буферов
         this.nextChunkRequested = false;
+        this.nextChunkStartTime = -1;
         this.nextPlayer.removeAttribute('src'); // Очистка следующего плеера
         this.nextPlayer._chunkStart = -1;
         this.nextPlayer.load();
@@ -128,6 +130,13 @@ const streamer = {
                 this.nextPlayer.load();
                 this.nextPlayer._chunkStart = chunkStart;
                 this.nextChunkRequested = false;
+
+                if (this.isLoading && this.currentPlayer.ended) {
+                    logPlayer("PLAY", "Отложенный Swap: Буфер прибыл, запускаем.");
+                    document.getElementById('loading-overlay').style.display = 'none';
+                    this.isLoading = false;
+                    this.swap();
+                }
             } else {
                 logPlayer("MISMATCH", "Предзагрузка пришла, но время не стыкуется.", { chunkStart, expectedNext });
                 this.nextChunkRequested = false; // Сбрасываем флаг, чтобы попытаться снова
@@ -177,6 +186,9 @@ const streamer = {
             if (remaining < 5 && !this.nextChunkRequested && !this.hasNextChunkBuffered() && (this.currentChunkStartTime + duration) < this.totalDuration - 0.5) {
                 const nextStart = this.currentChunkStartTime + duration;
                 this.nextChunkRequested = true;
+
+                this.nextChunkStartTime = nextStart;
+
                 requestPreviewFragment(nextStart, "Авто-предзагрузка (Next Chunk)", true);
             }
         }
@@ -211,8 +223,6 @@ const streamer = {
             this.nextPlayer.onended = null;
             this.nextPlayer.ontimeupdate = null;
 
-            // ОЧИСТКА СТАРОГО ПЛЕЕРА (Zombie Kill)
-            // Чтобы он не "помнил" старое видео
             this.nextPlayer.removeAttribute('src');
             this.nextPlayer._chunkStart = -1;
             this.nextPlayer.load();
@@ -225,13 +235,16 @@ const streamer = {
                 this.isPlaying = false;
                 document.getElementById('v-play-btn').textContent = '▶';
             } else {
-                logPlayer("PLAY", "Swap: Буфер не готов или рассинхрон. Принудительная загрузка.", {
-                    expected: expectedNextTime,
-                    actualBuffer: this.nextPlayer._chunkStart
-                });
-                this.isLoading = true;
-                document.getElementById('loading-overlay').style.display = 'flex';
-                this.seek(expectedNextTime, "Swap Fail Recovery");
+                if (this.nextChunkRequested && Math.abs(this.nextChunkStartTime - expectedNextTime) < 1.0) {
+                    logPlayer("PLAY", "Swap: Ждем уже запрошенный буфер (не спамим сервер).", { expected: expectedNextTime });
+                    this.isLoading = true;
+                    document.getElementById('loading-overlay').style.display = 'flex';
+                } else {
+                    logPlayer("PLAY", "Swap: Буфер потерян. Принудительная загрузка.", { expected: expectedNextTime });
+                    this.isLoading = true;
+                    document.getElementById('loading-overlay').style.display = 'flex';
+                    this.seek(expectedNextTime, "Swap Fail Recovery");
+                }
             }
         }
     }

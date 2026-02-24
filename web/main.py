@@ -87,12 +87,22 @@ async def websocket_handler(websocket):
                 is_preload = data.get("is_preload", False)
                 task_type = "preload" if is_preload else "seek"
 
+                # 1. Отменяем задачу того же типа
                 current_task = client_tasks[ws_id][task_type]
                 if current_task and not current_task.done():
                     log_debug(f"[Queue] Отмена старого {task_type} (Новый запрос)")
                     current_task.cancel()
                     try: await current_task
                     except asyncio.CancelledError: pass
+
+                # 2. ВАЖНО: Если это Seek (клик), он отменяет и текущий Preload (фоновый)
+                if not is_preload:
+                    preload_task = client_tasks[ws_id]["preload"]
+                    if preload_task and not preload_task.done():
+                        log_debug(f"[Queue] Отмена фонового preload (приоритет у нового seek)")
+                        preload_task.cancel()
+                        try: await preload_task
+                        except asyncio.CancelledError: pass
 
                 async def preview_task_wrapper():
                     try:

@@ -66,7 +66,7 @@ async def detect_hw_support():
     if os.path.exists(vaapi_device):
         vaapi_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'verbose',
-            '-init_hw_device', f'vaapi=va:{vaapi_device}', '-filter_hw_device', 'va',
+            '-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va',
             '-f', 'lavfi', '-i', 'color=black:s=256x256:r=24',
             '-vf', 'format=nv12,hwupload,scale_vaapi=w=256:h=256',
             '-c:v', 'h264_vaapi', '-frames:v', '1', '-f', 'null', '-'
@@ -78,7 +78,7 @@ async def detect_hw_support():
             
             ovl_cmd = [
                 'ffmpeg', '-hide_banner', '-loglevel', 'verbose',
-                '-init_hw_device', f'vaapi=va:{vaapi_device}', '-filter_hw_device', 'va', 
+                '-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va', 
                 '-f', 'lavfi', '-i', 'color=black:s=256x256:r=24',
                 '-f', 'lavfi', '-i', 'color=white:s=256x256:r=24',
                 '-filter_complex', '[0:v]format=nv12,hwupload[bg];[1:v]format=nv12,hwupload[fg];[bg][fg]overlay_vaapi=x=0:y=0',
@@ -91,39 +91,15 @@ async def detect_hw_support():
     with open(FFMPEG_PREVIEW_LOG, "a", encoding="utf-8") as f:
         f.write("\nFinal Decision: Using CPU (libx264)\n")
 
-# --- Помощники фильтров ---
 def calc_ar_dims(src_w: int, src_h: int, max_w: int, max_h: int) -> Tuple[int, int]:
     if src_w == 0 or src_h == 0: return max_w, max_h
     ratio = min(max_w / src_w, max_h / src_h)
     tw, th = int(src_w * ratio), int(src_h * ratio)
     return tw - (tw % 2), th - (th % 2)
 
-def build_hw_scale_pad(engine: str, src_w: int, src_h: int, target_w: int, target_h: int) -> str:
-    tw, th = calc_ar_dims(src_w, src_h, target_w, target_h)
-    pad = f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
-    
-    if engine == "cuda":
-        return f"format=nv12,hwupload_cuda,scale_cuda={tw}:{th}:format=nv12,hwdownload,format=nv12,{pad},setsar=1"
-    elif engine == "vaapi":
-        return f"format=nv12,hwupload,scale_vaapi=w={target_w}:h={target_h}:force_original_aspect_ratio=decrease,hwdownload,format=nv12,{pad},setsar=1"
-    else:
-        return f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,{pad},setsar=1"
-
-def build_hw_scale_pip(engine: str, src_w: int, src_h: int, max_w: int, max_h: int) -> str:
-    tw, th = calc_ar_dims(src_w, src_h, max_w, max_h)
-    if engine == "cuda": return f"format=nv12,hwupload_cuda,scale_cuda={tw}:{th}:format=nv12,hwdownload,format=nv12,setsar=1"
-    elif engine == "vaapi": return f"format=nv12,hwupload,scale_vaapi={tw}:{th},hwdownload,format=nv12,setsar=1"
-    else: return f"scale={tw}:{th},setsar=1"
-
-def build_hw_overlay(engine: str, bg_pad: str, fg_pad: str, x: int, y: int) -> List[str]:
-    if engine == "cuda":
-        return [f"{bg_pad}format=nv12,hwupload_cuda[bg_hw]", f"{fg_pad}format=nv12,hwupload_cuda[fg_hw]", 
-                f"[bg_hw][fg_hw]overlay_cuda=x={x}:y={y},hwdownload,format=nv12"]
-    elif engine == "vaapi":
-        return [f"{bg_pad}format=nv12,hwupload[bg_hw]", f"{fg_pad}format=nv12,hwupload[fg_hw]", 
-                f"[bg_hw][fg_hw]overlay_vaapi=x={x}:y={y},hwdownload,format=nv12"]
-    else:
-        return [f"{bg_pad}{fg_pad}overlay=x={x}:y={y}:eof_action=pass"]
+def seconds_to_hms(seconds: float) -> str:
+    h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:05.2f}"
 
 def get_last_error(log_file: str, lines: int = 4) -> str:
     try:
@@ -133,17 +109,13 @@ def get_last_error(log_file: str, lines: int = 4) -> str:
             return "\n".join(errors[-lines:])
     except: return "Не удалось прочитать подробности из лога."
 
-def seconds_to_hms(seconds: float) -> str:
-    h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = seconds % 60
-    return f"{h:02d}:{m:02d}:{s:05.2f}"
-
 async def send_log(websocket, message: str, to_terminal: bool = True, msg_type: str = "log"):
     try: 
         await websocket.send(json.dumps({ "action": "log", "message": message, "type": msg_type }))
         if to_terminal: log_debug(f"[UI-LOG] {message}", to_console=True)
     except: pass
 
-async def run_async_command(websocket, command: List[str], log_file: str, title: str = "", is_preview: bool = False):
+async def run_async_command(websocket, command: List[str], log_file: str, title: str = "", is_preview: bool = False, total_dur: float = 0):
     if title: await send_log(websocket, f"--- {title} ---", msg_type="header")
     cmd = [str(x) for x in command]
     
@@ -166,10 +138,14 @@ async def run_async_command(websocket, command: List[str], log_file: str, title:
             
             if not is_preview and ("frame=" in decoded or "time=" in decoded):
                 time_m = re.search(r'time=([\d:.]+)', decoded)
-                bitr_m = re.search(r'bitrate=\s*([\d.]+kbits/s)', decoded)
+                fps_m = re.search(r'fps=\s*([\d.]+)', decoded)
+                
                 if time_m:
-                    bt_str = f" | Битрейт: {bitr_m.group(1)}" if bitr_m else ""
-                    await send_log(websocket, f"Обработка: {time_m.group(1)}{bt_str}", to_terminal=False, msg_type="progress")
+                    time_str = time_m.group(1)
+                    fps_str = f" | Скорость: {fps_m.group(1)} fps" if fps_m else ""
+                    dur_str = f" / {seconds_to_hms(total_dur)}" if total_dur > 0 else ""
+                    
+                    await send_log(websocket, f"Обработка: {time_str}{dur_str}{fps_str}", to_terminal=False, msg_type="progress")
 
         await process.wait()
         end_time = asyncio.get_event_loop().time()
@@ -204,6 +180,9 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
         inputs.extend(['-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va'])
 
     in_idx = 0
+    fps = PREVIEW_FPS
+    tw_max, th_max = PREVIEW_WIDTH, PREVIEW_HEIGHT
+
     for i, c in enumerate(active_clips):
         t_start = max(request_time, c.global_start)
         t_end = min(req_end, c.global_start + c.duration)
@@ -211,83 +190,140 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
         if needed_dur <= 0.05: continue
 
         offset_in_src = (t_start - c.global_start) + c.source_start
-        seek = max(0, offset_in_src - SEEK_BUFFER)
-        trim_st = offset_in_src - seek
         
-        # Инпуты
-        inputs.extend(['-ss', f"{seek:.4f}", '-i', c.source])
+        inputs.extend(['-ss', f"{offset_in_src:.4f}", '-t', f"{(needed_dur + 0.5):.4f}", '-i', c.source])
         base_idx = in_idx; in_idx += 1
         
-        # 1. Base Scale
-        v_base = f"[{base_idx}:v]{build_hw_scale_pad(HW_INFO['engine'], c.width, c.height, PREVIEW_WIDTH, PREVIEW_HEIGHT)}"
-        filters.append(f"{v_base},trim=start={trim_st:.4f}:duration={needed_dur:.4f},setpts=PTS-STARTPTS[base_v{i}]")
-        cur_v = f"[base_v{i}]"
+        filters.append(f"[{base_idx}:v]trim=start=0:duration={needed_dur:.4f},setpts=PTS-STARTPTS[base_t{i}]")
+        cur_v = f"[base_t{i}]"
+        is_hw = False
+
+        tw, th = calc_ar_dims(c.width, c.height, tw_max, th_max)
+
+        if HW_INFO["engine"] != "cpu" and HW_INFO["overlay_supported"]:
+            up = "hwupload_cuda" if HW_INFO["engine"] == "cuda" else "hwupload"
+            sc = f"scale_cuda={tw}:{th}:format=nv12" if HW_INFO["engine"] == "cuda" else f"scale_vaapi=w={tw}:h={th}"
+
+            if tw == tw_max and th == th_max:
+                filters.append(f"{cur_v}format=nv12,{up},{sc}[padded_hw_{i}]")
+                cur_v = f"[padded_hw_{i}]"
+            else:
+                x_off, y_off = (tw_max - tw) // 2, (th_max - th) // 2
+                ov = f"overlay_cuda=x={x_off}:y={y_off}:eof_action=pass" if HW_INFO["engine"] == "cuda" else f"overlay_vaapi=x={x_off}:y={y_off}:eof_action=pass"
+                filters.append(f"color=black:s={tw_max}x{th_max}:d={needed_dur:.4f}:r={fps},format=nv12,{up}[bg_{i}]")
+                filters.append(f"{cur_v}format=nv12,{up},{sc}[vid_hw_{i}]")
+                filters.append(f"[bg_{i}][vid_hw_{i}]{ov}[padded_hw_{i}]")
+                cur_v = f"[padded_hw_{i}]"
+            
+            is_hw = True
+        else:
+            if tw == tw_max and th == th_max:
+                filters.append(f"{cur_v}scale={tw_max}:{th_max},setsar=1[padded_sw_{i}]")
+            else:
+                filters.append(f"{cur_v}scale={tw_max}:{th_max}:force_original_aspect_ratio=decrease,pad={tw_max}:{th_max}:(ow-iw)/2:(oh-ih)/2,setsar=1[padded_sw_{i}]")
+            cur_v = f"[padded_sw_{i}]"
 
         if c.has_overlay:
             pip_offset = (t_start - c.global_start) + c.overlay_source_start
-            pip_seek = max(0, pip_offset - SEEK_BUFFER)
-            pip_trim = pip_offset - pip_seek
             
-            inputs.extend(['-ss', f"{pip_seek:.4f}", '-i', c.overlay_source])
+            inputs.extend(['-ss', f"{pip_offset:.4f}", '-t', f"{(needed_dur + 0.5):.4f}", '-i', c.overlay_source])
             pip_idx = in_idx; in_idx += 1
             
-            pw = int(PREVIEW_WIDTH * c.overlay_w); ph = int(pw * (9/16))
-            px = int(PREVIEW_WIDTH * c.overlay_x); py = int(PREVIEW_HEIGHT * c.overlay_y)
+            filters.append(f"[{pip_idx}:v]trim=start=0:duration={needed_dur:.4f},setpts=PTS-STARTPTS[pip_t{i}]")
+            
+            pw = int(tw_max * c.overlay_w); ph = int(pw * (9/16))
+            pw -= pw % 2; ph -= ph % 2
+            px = int(tw_max * c.overlay_x); py = int(th_max * c.overlay_y)
 
-            # 2. PiP Scale
-            ov_info = await get_video_info(c.overlay_source)
-            pip_scale = f"[{pip_idx}:v]{build_hw_scale_pip(HW_INFO['engine'], ov_info.get('width', 1920), ov_info.get('height', 1080), pw, ph)}"
-            filters.append(f"{pip_scale},trim=start={pip_trim:.4f}:duration={needed_dur:.4f},setpts=PTS-STARTPTS[pip_v{i}]")
-
-            # 3. Overlay
-            if HW_INFO["overlay_supported"]:
-                ovl_f = build_hw_overlay(HW_INFO["engine"], cur_v, f"[pip_v{i}]", px, py)
-                filters.extend(ovl_f[:-1])
-                filters.append(f"{ovl_f[-1]}[ovl_v{i}]")
+            if is_hw:
+                ov_info = await get_video_info(c.overlay_source)
+                tw_pip, th_pip = calc_ar_dims(ov_info.get('width', 1920), ov_info.get('height', 1080), pw, ph)
+                
+                sc_pip = f"scale_cuda={tw_pip}:{th_pip}:format=nv12" if HW_INFO["engine"] == "cuda" else f"scale_vaapi=w={tw_pip}:h={th_pip}"
+                ov_pip = f"overlay_cuda=x={px}:y={py}:eof_action=pass" if HW_INFO["engine"] == "cuda" else f"overlay_vaapi=x={px}:y={py}:eof_action=pass"
+                
+                filters.append(f"[pip_t{i}]format=nv12,{up},{sc_pip}[pip_hw_{i}]")
+                filters.append(f"{cur_v}[pip_hw_{i}]{ov_pip}[ovl_hw_{i}]")
+                cur_v = f"[ovl_hw_{i}]"
             else:
-                filters.append(f"{cur_v}[pip_v{i}]overlay=x={px}:y={py}:eof_action=pass[ovl_v{i}]")
-            cur_v = f"[ovl_v{i}]"
+                filters.append(f"[pip_t{i}]scale={pw}:{ph},setsar=1[pip_sw_{i}]")
+                filters.append(f"{cur_v}[pip_sw_{i}]overlay=x={px}:y={py}:eof_action=pass[ovl_sw_{i}]")
+                cur_v = f"[ovl_sw_{i}]"
 
         if c.is_fade:
-            if c.fade_in and (t_start - c.global_start) < FADE_DURATION:
-                filters.append(f"{cur_v}fade=in:st=0:d={FADE_DURATION}[fv_in{i}]"); cur_v = f"[fv_in{i}]"
-            if c.fade_out and (c.duration - (t_start - c.global_start + needed_dur)) < FADE_DURATION:
-                filters.append(f"{cur_v}fade=out:st={max(0, needed_dur-FADE_DURATION):.4f}:d={FADE_DURATION}[fv_out{i}]"); cur_v = f"[fv_out{i}]"
+            needs_fade = False
+            if c.fade_in and (t_start - c.global_start) < FADE_DURATION: needs_fade = True
+            if c.fade_out and (c.duration - (t_start - c.global_start + needed_dur)) < FADE_DURATION: needs_fade = True
+            
+            if needs_fade:
+                if is_hw:
+                    filters.append(f"{cur_v}hwdownload,format=nv12[fade_down_{i}]")
+                    cur_v = f"[fade_down_{i}]"
+                    is_hw = False
+                    
+                if c.fade_in and (t_start - c.global_start) < FADE_DURATION:
+                    filters.append(f"{cur_v}fade=in:st=0:d={FADE_DURATION}[fv_in{i}]"); cur_v = f"[fv_in{i}]"
+                if c.fade_out and (c.duration - (t_start - c.global_start + needed_dur)) < FADE_DURATION:
+                    filters.append(f"{cur_v}fade=out:st={max(0, needed_dur-FADE_DURATION):.4f}:d={FADE_DURATION}[fv_out{i}]"); cur_v = f"[fv_out{i}]"
                 
-        v_pads.append(cur_v)
-        filters.append(f"[{base_idx}:a]atrim=start={trim_st:.4f}:duration={needed_dur:.4f},asetpts=PTS-STARTPTS,volume={c.volume}[base_a{i}]")
+        v_pads.append((cur_v, is_hw))
+        
+        filters.append(f"[{base_idx}:a]atrim=start=0:duration={needed_dur:.4f},asetpts=PTS-STARTPTS,volume={c.volume}[base_a{i}]")
         cur_a = f"[base_a{i}]"
-
+        
         if c.has_overlay and c.overlay_audio:
-            filters.append(f"[{pip_idx}:a]atrim=start={pip_trim:.4f}:duration={needed_dur:.4f},asetpts=PTS-STARTPTS,volume=1.0[pip_a{i}]")
+            filters.append(f"[{pip_idx}:a]atrim=start=0:duration={needed_dur:.4f},asetpts=PTS-STARTPTS,volume=1.0[pip_a{i}]")
             filters.append(f"{cur_a}[pip_a{i}]amix=inputs=2:duration=first:dropout_transition=2[mix_a{i}]"); cur_a = f"[mix_a{i}]"
         a_pads.append(cur_a)
 
-    v_out_str = f"{''.join(v_pads)}concat=n={len(v_pads)}:v=1:a=0"
     v_codec = "libx264"
-    if HW_INFO["engine"] == "cuda":
-        v_out_str += ",format=nv12,hwupload_cuda[v_out]"
-        v_codec = "h264_nvenc"
-    elif HW_INFO["engine"] == "vaapi":
-        v_out_str += ",format=nv12,hwupload[v_out]"
-        v_codec = "h264_vaapi"
+    if len(v_pads) == 1:
+        final_v, is_hw = v_pads[0]
+        if is_hw:
+            v_out_str = final_v
+            v_codec = "h264_nvenc" if HW_INFO["engine"] == "cuda" else "h264_vaapi"
+        else:
+            if HW_INFO["engine"] == "cuda":
+                filters.append(f"{final_v}format=nv12,hwupload_cuda[v_out]")
+                v_out_str, v_codec = "[v_out]", "h264_nvenc"
+            elif HW_INFO["engine"] == "vaapi":
+                filters.append(f"{final_v}format=nv12,hwupload[v_out]")
+                v_out_str, v_codec = "[v_out]", "h264_vaapi"
+            else:
+                v_out_str = final_v
     else:
-        v_out_str += "[v_out]"
-    filters.append(v_out_str)
+        concat_inputs = ""
+        for i, (v, is_hw) in enumerate(v_pads):
+            if is_hw:
+                filters.append(f"{v}hwdownload,format=nv12[down_{i}]")
+                concat_inputs += f"[down_{i}]"
+            else:
+                concat_inputs += v
+        
+        filters.append(f"{concat_inputs}concat=n={len(v_pads)}:v=1:a=0[v_concat]")
+        
+        if HW_INFO["engine"] == "cuda":
+            filters.append(f"[v_concat]format=nv12,hwupload_cuda[v_out]")
+            v_out_str, v_codec = "[v_out]", "h264_nvenc"
+        elif HW_INFO["engine"] == "vaapi":
+            filters.append(f"[v_concat]format=nv12,hwupload[v_out]")
+            v_out_str, v_codec = "[v_out]", "h264_vaapi"
+        else:
+            v_out_str = "[v_concat]"
     
     filters.append(f"{''.join(a_pads)}concat=n={len(a_pads)}:v=0:a=1[a_out]")
 
     cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'level+time+verbose'] + inputs + \
-          ['-filter_complex', ";".join(filters), '-map', '[v_out]', '-map', '[a_out]',
-           '-c:v', v_codec]
+          ['-filter_complex', ";".join(filters), '-map', v_out_str, '-map', '[a_out]', '-c:v', v_codec]
     
     if v_codec == "h264_nvenc": cmd.extend(['-preset', 'p1', '-tune', 'll', '-delay', '0'])
     elif v_codec == "h264_vaapi": cmd.extend(['-preset', 'ultrafast'])
     else: cmd.extend(['-preset', 'ultrafast'])
     
-    cmd.extend(['-r', '20', '-crf', '28', '-g', '15', '-c:a', 'aac', '-b:a', '128k', out_file, '-y'])
+    cmd.extend(['-r', str(PREVIEW_FPS), '-crf', '28', '-g', '15', '-c:a', FINAL_AUDIO_CODEC, '-b:a', '128k', out_file, '-y'])
     
-    await run_async_command(websocket, cmd, FFMPEG_PREVIEW_LOG, f"PREVIEW ({seconds_to_hms(request_time)})", is_preview=True)
+    # Для превью общая длительность - это FRAGMENT_DURATION
+    await run_async_command(websocket, cmd, FFMPEG_PREVIEW_LOG, f"PREVIEW ({seconds_to_hms(request_time)})", is_preview=True, total_dur=FRAGMENT_DURATION)
     return out_file, request_time
 
 class FinalRenderer:
@@ -303,6 +339,9 @@ class FinalRenderer:
         v1_clip = next((c for c in self.timeline if "Seg" in c.name), self.timeline[0])
         master = await get_video_info(v1_clip.source)
         master_ar = master['width'] / master['height'] if master['height'] > 0 else 1.777
+        
+        # Общая длительность всего видео для финальной склейки
+        total_final_duration = sum(c.duration for c in self.timeline)
         
         for i, c in enumerate(self.timeline):
             needs_reencode = c.is_fade or c.has_overlay
@@ -328,35 +367,71 @@ class FinalRenderer:
                 if c.has_overlay: cmd.extend(['-ss', f"{c.overlay_source_start:.4f}", '-i', c.overlay_source])
                 cmd.extend(['-t', f"{c.duration:.4f}"])
                 
-                vf = [f"[0:v]{build_hw_scale_pad(HW_INFO['engine'], c.width, c.height, target_w, target_h)},fps={master['fps']}[base_v]"]
-                cur_v = "[base_v]"
+                filters = []
+                tw, th = calc_ar_dims(c.width, c.height, target_w, target_h)
+                
+                if HW_INFO["engine"] != "cpu" and HW_INFO["overlay_supported"]:
+                    up = "hwupload_cuda" if HW_INFO["engine"] == "cuda" else "hwupload"
+                    sc = f"scale_cuda={tw}:{th}:format=nv12" if HW_INFO["engine"] == "cuda" else f"scale_vaapi=w={tw}:h={th}"
+                    
+                    if tw == target_w and th == target_h:
+                        filters.append(f"[0:v]format=nv12,{up},{sc}[padded_hw]")
+                        cur_v = "[padded_hw]"
+                    else:
+                        x_off, y_off = (target_w - tw) // 2, (target_h - th) // 2
+                        ov = f"overlay_cuda=x={x_off}:y={y_off}:eof_action=pass" if HW_INFO["engine"] == "cuda" else f"overlay_vaapi=x={x_off}:y={y_off}:eof_action=pass"
+                        filters.append(f"color=black:s={target_w}x{target_h}:d={c.duration:.4f}:r={master['fps']},format=nv12,{up}[bg]")
+                        filters.append(f"[0:v]format=nv12,{up},{sc}[vid_hw]")
+                        filters.append(f"[bg][vid_hw]{ov}[padded_hw]")
+                        cur_v = "[padded_hw]"
+                        
+                    is_hw = True
+                else:
+                    if tw == target_w and th == target_h:
+                        filters.append(f"[0:v]scale={target_w}:{target_h},setsar=1,fps={master['fps']}[padded_sw]")
+                    else:
+                        filters.append(f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={master['fps']}[padded_sw]")
+                    cur_v = "[padded_sw]"
+                    is_hw = False
                 
                 if c.has_overlay:
                     ov_info = await get_video_info(c.overlay_source)
                     pw = int(target_w * c.overlay_w); ph = int(pw * (9/16)); pw -= pw % 2; ph -= ph % 2
                     px = int(target_w * c.overlay_x); py = int(target_h * c.overlay_y)
-                    vf.append(f"[1:v]{build_hw_scale_pip(HW_INFO['engine'], ov_info.get('width',1920), ov_info.get('height',1080), pw, ph)},fps={master['fps']}[pip_v]")
                     
-                    if HW_INFO["overlay_supported"]:
-                        ovl_f = build_hw_overlay(HW_INFO["engine"], cur_v, "[pip_v]", px, py)
-                        vf.extend(ovl_f[:-1])
-                        vf.append(f"{ovl_f[-1]}[ovl_v]")
+                    if is_hw:
+                        tw_pip, th_pip = calc_ar_dims(ov_info.get('width', 1920), ov_info.get('height', 1080), pw, ph)
+                        sc_pip = f"scale_cuda={tw_pip}:{th_pip}:format=nv12" if HW_INFO["engine"] == "cuda" else f"scale_vaapi=w={tw_pip}:h={th_pip}"
+                        ov_pip = f"overlay_cuda=x={px}:y={py}:eof_action=pass" if HW_INFO["engine"] == "cuda" else f"overlay_vaapi=x={px}:y={py}:eof_action=pass"
+                        
+                        filters.append(f"[1:v]format=nv12,{up},{sc_pip}[pip_hw]")
+                        filters.append(f"{cur_v}[pip_hw]{ov_pip}[ovl_hw]")
+                        cur_v = "[ovl_hw]"
                     else:
-                        vf.append(f"{cur_v}[pip_v]overlay=x={px}:y={py}:eof_action=pass[ovl_v]")
-                    cur_v = "[ovl_v]"
+                        filters.append(f"[1:v]scale={pw}:{ph},setsar=1[pip_sw]")
+                        filters.append(f"{cur_v}[pip_sw]overlay=x={px}:y={py}:eof_action=pass[ovl_sw]")
+                        cur_v = "[ovl_sw]"
 
-                if c.fade_in: vf.append(f"{cur_v}fade=in:st=0:d={FADE_DURATION}[fv_in]"); cur_v = "[fv_in]"
-                if c.fade_out: vf.append(f"{cur_v}fade=out:st={c.duration-FADE_DURATION:.4f}:d={FADE_DURATION}[fv_out]"); cur_v = "[fv_out]"
+                if c.is_fade:
+                    if is_hw:
+                        filters.append(f"{cur_v}hwdownload,format=nv12[fade_down]")
+                        cur_v = "[fade_down]"
+                        is_hw = False
+                    if c.fade_in: filters.append(f"{cur_v}fade=in:st=0:d={FADE_DURATION}[fv_in]"); cur_v = "[fv_in]"
+                    if c.fade_out: filters.append(f"{cur_v}fade=out:st={c.duration-FADE_DURATION:.4f}:d={FADE_DURATION}[fv_out]"); cur_v = "[fv_out]"
                 
                 v_codec = VIDEO_ENCODER
-                if HW_INFO["engine"] == "cuda":
-                    vf.append(f"{cur_v}format=nv12,hwupload_cuda[out_v]")
-                    cur_v = "[out_v]"
-                    v_codec = "h264_nvenc"
-                elif HW_INFO["engine"] == "vaapi":
-                    vf.append(f"{cur_v}format=nv12,hwupload[out_v]")
-                    cur_v = "[out_v]"
-                    v_codec = "h264_vaapi"
+                v_out_str = cur_v
+                if is_hw:
+                    v_codec = "h264_nvenc" if HW_INFO["engine"] == "cuda" else "h264_vaapi"
+                else:
+                    if HW_INFO["engine"] == "cuda":
+                        filters.append(f"{cur_v}format=nv12,hwupload_cuda[out_v]")
+                        v_out_str, v_codec = "[out_v]", "h264_nvenc"
+                    elif HW_INFO["engine"] == "vaapi":
+                        filters.append(f"{cur_v}format=nv12,hwupload[out_v]")
+                        v_out_str, v_codec = "[out_v]", "h264_vaapi"
+
                 
                 af = [f"[0:a]volume={c.volume}[base_a]"]
                 cur_a = "[base_a]"
@@ -366,12 +441,13 @@ class FinalRenderer:
                 if c.fade_in: af.append(f"{cur_a}afade=t=in:st=0:d={FADE_DURATION}[fa_in]"); cur_a = "[fa_in]"
                 if c.fade_out: af.append(f"{cur_a}afade=t=out:st={c.duration-FADE_DURATION:.4f}:d={FADE_DURATION}[fa_out]"); cur_a = "[fa_out]"
 
-                cmd.extend(['-filter_complex', f"{';'.join(vf)};{';'.join(af)}", '-map', cur_v, '-map', cur_a, '-c:v', v_codec])
+                cmd.extend(['-filter_complex', f"{';'.join(filters)};{';'.join(af)}", '-map', v_out_str, '-map', cur_a, '-c:v', v_codec])
                 if v_codec == "h264_nvenc": cmd.extend(['-preset', 'p6'])
                 
                 cmd.extend(['-crf', '18', '-c:a', FINAL_AUDIO_CODEC, out, '-y'])
                 
-                await run_async_command(self.ws, cmd, FFMPEG_FINAL_LOG, f"Адаптация: {c.name}")
+                # Для адаптации сегмента общая длительность - это c.duration
+                await run_async_command(self.ws, cmd, FFMPEG_FINAL_LOG, f"Адаптация: {c.name}", total_dur=c.duration)
                 c.source, c.audio_source, c.source_start, c.is_fade, c.has_overlay = out, out, 0.0, False, False
         
         list_file = os.path.join(self.tmp_dir, "concat.txt"); self.temp_files.append(list_file)
@@ -388,7 +464,8 @@ class FinalRenderer:
         final_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'verbose'] + cmd_inputs + \
                     ['-filter_complex', ";".join(a_filters), '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', FINAL_AUDIO_CODEC, self.output_path, '-y']
         
-        await run_async_command(self.ws, final_cmd, FFMPEG_FINAL_LOG, "Финальная склейка")
+        # Для финальной склейки общая длительность - это сумма всех клипов
+        await run_async_command(self.ws, final_cmd, FFMPEG_FINAL_LOG, "Финальная склейка", total_dur=total_final_duration)
         for f in self.temp_files: 
             if os.path.exists(f): 
                 try: os.remove(f)
