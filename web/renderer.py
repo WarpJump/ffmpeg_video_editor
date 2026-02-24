@@ -1,5 +1,5 @@
 ## @file renderer.py
-# @brief Модуль выполнения команд FFmpeg (Гибридный VAAPI + CPU).
+# @brief Модуль выполнения команд FFmpeg (CUDA + VAAPI + CPU).
 
 import os
 import uuid
@@ -11,75 +11,131 @@ from typing import List, Tuple, Optional
 from config import *
 from timeline import VideoClip, get_video_info
 
-# --- Глобальное состояние железа ---
 HW_INFO = {
-    "vaapi_supported": False,
-    "vaapi_overlay": False,
-    "device": "/dev/dri/renderD128"
+    "engine": "cpu", # "cuda", "vaapi", "cpu"
+    "device": "",
+    "overlay_supported": False
 }
 
-async def detect_hw_support():
-    """ Проверка поддержки VAAPI (Масштабирование и Наложение) """
-    log_debug(f"[HW] Тестирование аппаратного ускорения VAAPI ({HW_INFO['device']})...")
-    
-    # ТЕСТ 1: Поддержка базового VAAPI (hwupload + scale_vaapi + h264_vaapi)
-    test1_cmd = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'error',
-        '-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va',
-        '-f', 'lavfi', '-i', 'color=black:s=128x128:r=24',
-        '-vf', 'format=nv12,hwupload,scale_vaapi=w=128:h=128',
-        '-c:v', 'h264_vaapi', '-frames:v', '1', '-f', 'null', '-'
-    ]
+async def run_hw_test(test_name: str, cmd: List[str], log_file: str) -> bool:
+    """ Выполняет конкретную тестовую команду FFmpeg и пишет результат в лог """
     try:
-        proc1 = await asyncio.create_subprocess_exec(*test1_cmd)
-        await proc1.wait()
-        if proc1.returncode == 0:
-            HW_INFO["vaapi_supported"] = True
-            log_debug("[HW] Базовый VAAPI (Scale + Encode) УСПЕШНО активирован.")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*10} TEST HW: {test_name} {'='*10}\nCOMMAND: {' '.join(cmd)}\n")
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd, 
+            stdout=asyncio.subprocess.PIPE, 
+            stderr=asyncio.subprocess.STDOUT
+        )
+        stdout, _ = await process.communicate()
+        decoded = stdout.decode('utf-8', errors='ignore')
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(decoded)
+            status = "SUCCESS" if process.returncode == 0 else f"FAILED (code {process.returncode})"
+            f.write(f"\nRESULT: {status}\n{'-'*40}\n")
+
+        return process.returncode == 0
+    except Exception as e:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"CRITICAL ERROR DURING CHECK {test_name}: {e}\n")
+        return False
+
+async def detect_hw_support():
+    log_debug(f"[HW] Детекция аппаратного ускорения (Логи в {FFMPEG_PREVIEW_LOG})...")
+    
+    with open(FFMPEG_PREVIEW_LOG, "a", encoding="utf-8") as f:
+        f.write(f"\n\n{'#'*30}\n# HARDWARE DETECTION START\n{'#'*30}\n")
+
+    cuda_cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'verbose',
+        '-init_hw_device', 'cuda=cu:0', '-filter_hw_device', 'cu',
+        '-f', 'lavfi', '-i', 'color=black:s=256x256:r=24',
+        '-vf', 'format=nv12,hwupload_cuda,scale_cuda=256:256',
+        '-c:v', 'h264_nvenc', '-frames:v', '1', '-f', 'null', '-'
+    ]
+    if await run_hw_test("NVIDIA CUDA", cuda_cmd, FFMPEG_PREVIEW_LOG):
+        HW_INFO["engine"] = "cuda"
+        HW_INFO["overlay_supported"] = True 
+        log_debug("✅ Используем CUDA")
+        return
+
+    # ТЕСТ 2: VAAPI (Intel/AMD)
+    vaapi_device = "/dev/dri/renderD128"
+    if os.path.exists(vaapi_device):
+        vaapi_cmd = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'verbose',
+            '-init_hw_device', f'vaapi=va:{vaapi_device}', '-filter_hw_device', 'va',
+            '-f', 'lavfi', '-i', 'color=black:s=256x256:r=24',
+            '-vf', 'format=nv12,hwupload,scale_vaapi=w=256:h=256',
+            '-c:v', 'h264_vaapi', '-frames:v', '1', '-f', 'null', '-'
+        ]
+        if await run_hw_test("INTEL/AMD VAAPI", vaapi_cmd, FFMPEG_PREVIEW_LOG):
+            HW_INFO["engine"] = "vaapi"
+            HW_INFO["device"] = vaapi_device
+            log_debug(f"✅ Используем VAAPI на {vaapi_device}.")
             
-            # ТЕСТ 2: Поддержка overlay_vaapi (На некоторых iGPU AMD не работает)
-            test2_cmd = [
-                'ffmpeg', '-hide_banner', '-loglevel', 'error',
-                '-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va',
-                '-f', 'lavfi', '-i', 'color=black:s=128x128:r=24',
-                '-f', 'lavfi', '-i', 'color=white:s=128x128:r=24',
+            ovl_cmd = [
+                'ffmpeg', '-hide_banner', '-loglevel', 'verbose',
+                '-init_hw_device', f'vaapi=va:{vaapi_device}', '-filter_hw_device', 'va', 
+                '-f', 'lavfi', '-i', 'color=black:s=256x256:r=24',
+                '-f', 'lavfi', '-i', 'color=white:s=256x256:r=24',
                 '-filter_complex', '[0:v]format=nv12,hwupload[bg];[1:v]format=nv12,hwupload[fg];[bg][fg]overlay_vaapi=x=0:y=0',
                 '-c:v', 'h264_vaapi', '-frames:v', '1', '-f', 'null', '-'
             ]
-            print(" ".join(test2_cmd))
-            proc2 = await asyncio.create_subprocess_exec(*test2_cmd)
-            await proc2.wait()
-            if proc2.returncode == 0:
-                HW_INFO["vaapi_overlay"] = True
-                log_debug("[HW] Аппаратное наложение (overlay_vaapi) ПОДДЕРЖИВАЕТСЯ.")
-            else:
-                log_debug("[HW] Аппаратное наложение НЕ поддерживается. Включен ГИБРИДНЫЙ режим (CPU Overlay).")
-        else:
-            log_debug("[HW] VAAPI не поддерживается или ошибка драйвера. Используем CPU.")
-    except Exception as e:
-        log_debug(f"[HW] Ошибка детекции VAAPI: {e}")
+            HW_INFO["overlay_supported"] = await run_hw_test("VAAPI OVERLAY", ovl_cmd, FFMPEG_PREVIEW_LOG)
+            return
+
+    log_debug("⚠️ Аппаратное ускорение не найдено. Используем CPU.")
+    with open(FFMPEG_PREVIEW_LOG, "a", encoding="utf-8") as f:
+        f.write("\nFinal Decision: Using CPU (libx264)\n")
+
+# --- Помощники фильтров ---
+def calc_ar_dims(src_w: int, src_h: int, max_w: int, max_h: int) -> Tuple[int, int]:
+    if src_w == 0 or src_h == 0: return max_w, max_h
+    ratio = min(max_w / src_w, max_h / src_h)
+    tw, th = int(src_w * ratio), int(src_h * ratio)
+    return tw - (tw % 2), th - (th % 2)
+
+def build_hw_scale_pad(engine: str, src_w: int, src_h: int, target_w: int, target_h: int) -> str:
+    tw, th = calc_ar_dims(src_w, src_h, target_w, target_h)
+    pad = f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
+    
+    if engine == "cuda":
+        return f"format=nv12,hwupload_cuda,scale_cuda={tw}:{th}:format=nv12,hwdownload,format=nv12,{pad},setsar=1"
+    elif engine == "vaapi":
+        return f"format=nv12,hwupload,scale_vaapi=w={target_w}:h={target_h}:force_original_aspect_ratio=decrease,hwdownload,format=nv12,{pad},setsar=1"
+    else:
+        return f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,{pad},setsar=1"
+
+def build_hw_scale_pip(engine: str, src_w: int, src_h: int, max_w: int, max_h: int) -> str:
+    tw, th = calc_ar_dims(src_w, src_h, max_w, max_h)
+    if engine == "cuda": return f"format=nv12,hwupload_cuda,scale_cuda={tw}:{th}:format=nv12,hwdownload,format=nv12,setsar=1"
+    elif engine == "vaapi": return f"format=nv12,hwupload,scale_vaapi={tw}:{th},hwdownload,format=nv12,setsar=1"
+    else: return f"scale={tw}:{th},setsar=1"
+
+def build_hw_overlay(engine: str, bg_pad: str, fg_pad: str, x: int, y: int) -> List[str]:
+    if engine == "cuda":
+        return [f"{bg_pad}format=nv12,hwupload_cuda[bg_hw]", f"{fg_pad}format=nv12,hwupload_cuda[fg_hw]", 
+                f"[bg_hw][fg_hw]overlay_cuda=x={x}:y={y},hwdownload,format=nv12"]
+    elif engine == "vaapi":
+        return [f"{bg_pad}format=nv12,hwupload[bg_hw]", f"{fg_pad}format=nv12,hwupload[fg_hw]", 
+                f"[bg_hw][fg_hw]overlay_vaapi=x={x}:y={y},hwdownload,format=nv12"]
+    else:
+        return [f"{bg_pad}{fg_pad}overlay=x={x}:y={y}:eof_action=pass"]
+
+def get_last_error(log_file: str, lines: int = 4) -> str:
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            content = f.readlines()
+            errors = [line.strip() for line in content if "frame=" not in line and "fps=" not in line and line.strip()]
+            return "\n".join(errors[-lines:])
+    except: return "Не удалось прочитать подробности из лога."
 
 def seconds_to_hms(seconds: float) -> str:
     h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:05.2f}"
-
-def get_scale_pad_filter(width: int, height: int, sar: str = "1") -> str:
-    """ Возвращает цепочку фильтров для CPU: Scale + Pad + SetSAR """
-    return f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar={sar}"
-
-def get_vaapi_scale_pad_hybrid(width: int, height: int, sar: str = "1") -> str:
-    """ 
-    Возвращает цепочку фильтров для VAAPI: 
-    GPU Scale (с сохранением AR) -> Download -> CPU Pad (черные полосы) -> SetSAR 
-    """
-    # 1. scale_vaapi с force_original_aspect_ratio=decrease впишет видео в прямоугольник, не нарушая пропорций.
-    # 2. hwdownload возвращает кадр в RAM (он может быть меньше целевого размера, например 1440x1080).
-    # 3. pad (софтварный) добавляет черные полосы до целевого размера (1920x1080) и центрирует.
-    return (f"format=nv12,hwupload,"
-            f"scale_vaapi=w={width}:h={height}:force_original_aspect_ratio=decrease,"
-            f"hwdownload,format=nv12,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-            f"setsar={sar}")
 
 async def send_log(websocket, message: str, to_terminal: bool = True, msg_type: str = "log"):
     try: 
@@ -87,48 +143,51 @@ async def send_log(websocket, message: str, to_terminal: bool = True, msg_type: 
         if to_terminal: log_debug(f"[UI-LOG] {message}", to_console=True)
     except: pass
 
-async def run_async_command(websocket, command: List[str], title: str = "", is_preview: bool = False):
+async def run_async_command(websocket, command: List[str], log_file: str, title: str = "", is_preview: bool = False):
     if title: await send_log(websocket, f"--- {title} ---", msg_type="header")
     cmd = [str(x) for x in command]
     
-    # Лог в терминал сервера
-    log_debug(f"[FFmpeg] Start: {title}")
-    start_time = asyncio.get_event_loop().time()
+    seek_msg = "(Fast Seek)" if '-ss' in cmd[:5] else ""
+    log_debug(f"[FFmpeg] Start: {title} {seek_msg}")
+    
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(f"\n{'='*20} {title.upper()} {'='*20}\nCOMMAND: {' '.join(cmd)}\n")
 
+    start_time = asyncio.get_event_loop().time()
+    process = None
     try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd, 
-            stdout=asyncio.subprocess.PIPE, 
-            stderr=asyncio.subprocess.STDOUT
-        )
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         
         while True:
             chunk = await process.stdout.read(1024)
             if not chunk: break
             decoded = chunk.decode('utf-8', errors='ignore')
+            with open(log_file, "a", encoding="utf-8") as f: f.write(decoded)
             
-            # Пишем только в файл, чтобы не спамить в терминал сервера
-            with open(FFMPEG_LOG_FILE, "a", encoding="utf-8") as f: f.write(decoded)
-            
-            # Прогресс отправляем в UI
             if not is_preview and ("frame=" in decoded or "time=" in decoded):
                 time_m = re.search(r'time=([\d:.]+)', decoded)
+                bitr_m = re.search(r'bitrate=\s*([\d.]+kbits/s)', decoded)
                 if time_m:
-                    await send_log(websocket, f"Обработка: {time_m.group(1)}", to_terminal=False, msg_type="progress")
+                    bt_str = f" | Битрейт: {bitr_m.group(1)}" if bitr_m else ""
+                    await send_log(websocket, f"Обработка: {time_m.group(1)}{bt_str}", to_terminal=False, msg_type="progress")
 
         await process.wait()
         end_time = asyncio.get_event_loop().time()
+        
+        if process.returncode != 0:
+            err_details = get_last_error(log_file)
+            await send_log(websocket, f"\n[!] ОШИБКА FFmpeg:\n{err_details}", msg_type="log")
+            log_debug(f"[FFmpeg] FAILED: {title}")
+            raise subprocess.CalledProcessError(process.returncode, " ".join(cmd))
+            
         log_debug(f"[FFmpeg] Done: {title} (Заняло: {end_time - start_time:.2f}s)")
 
     except asyncio.CancelledError:
-        # Это происходит, когда мы вызываем task.cancel() в main.py
         if process:
-            try:
-                process.terminate()
-                await process.wait()
+            try: process.terminate(); await process.wait()
             except: pass
-        log_debug(f"[FFmpeg] KILLED: {title} (Пользователь переключил действие)")
-        raise # Обязательно пробрасываем дальше
+        log_debug(f"[FFmpeg] KILLED: {title}")
+        raise
 
 async def render_preview_chunk(websocket, timeline: List[VideoClip], request_time: float) -> Tuple[Optional[str], float]:
     tmp_dir = "/dev/shm" if os.path.exists("/dev/shm") else "."
@@ -137,14 +196,14 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
     if not active_clips: return None, request_time
 
     out_file = os.path.join(tmp_dir, f"tc_{str(uuid.uuid4())}.mkv")
+    inputs, filters, v_pads, a_pads = [], [], [], []
     
-    inputs = []
-    if HW_INFO["vaapi_supported"]:
+    if HW_INFO["engine"] == "cuda":
+        inputs.extend(['-init_hw_device', 'cuda=cu:0', '-filter_hw_device', 'cu'])
+    elif HW_INFO["engine"] == "vaapi":
         inputs.extend(['-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va'])
 
-    filters, v_pads, a_pads = [], [], []
     in_idx = 0
-    
     for i, c in enumerate(active_clips):
         t_start = max(request_time, c.global_start)
         t_end = min(req_end, c.global_start + c.duration)
@@ -155,16 +214,12 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
         seek = max(0, offset_in_src - SEEK_BUFFER)
         trim_st = offset_in_src - seek
         
+        # Инпуты
         inputs.extend(['-ss', f"{seek:.4f}", '-i', c.source])
         base_idx = in_idx; in_idx += 1
         
-        # 1. Скейл ОСНОВЫ (Hybrid: GPU Scale + CPU Pad)
-        if HW_INFO["vaapi_supported"]:
-            # Используем новую функцию для умного ресайза с полосами
-            v_base = f"[{base_idx}:v]{get_vaapi_scale_pad_hybrid(PREVIEW_WIDTH, PREVIEW_HEIGHT)}"
-        else:
-            v_base = f"[{base_idx}:v]{get_scale_pad_filter(PREVIEW_WIDTH, PREVIEW_HEIGHT)}"
-        
+        # 1. Base Scale
+        v_base = f"[{base_idx}:v]{build_hw_scale_pad(HW_INFO['engine'], c.width, c.height, PREVIEW_WIDTH, PREVIEW_HEIGHT)}"
         filters.append(f"{v_base},trim=start={trim_st:.4f}:duration={needed_dur:.4f},setpts=PTS-STARTPTS[base_v{i}]")
         cur_v = f"[base_v{i}]"
 
@@ -176,29 +231,21 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
             inputs.extend(['-ss', f"{pip_seek:.4f}", '-i', c.overlay_source])
             pip_idx = in_idx; in_idx += 1
             
-            # Для PiP (картинка в картинке) обычно не нужны черные полосы ВНУТРИ окошка PiP,
-            # но setsar=1 нужен обязательно. Пока оставим просто setsar, чтобы окно заполнялось.
-            # Если нужно сохранять AR и для PiP - можно применить ту же логику.
             pw = int(PREVIEW_WIDTH * c.overlay_w); ph = int(pw * (9/16))
-            pw -= pw % 2; ph -= ph % 2
             px = int(PREVIEW_WIDTH * c.overlay_x); py = int(PREVIEW_HEIGHT * c.overlay_y)
 
-            # 2. Скейл PiP
-            if HW_INFO["vaapi_supported"]:
-                pip_scale = f"[{pip_idx}:v]format=nv12,hwupload,scale_vaapi={pw}:{ph},hwdownload,format=nv12,setsar=1"
-            else:
-                pip_scale = f"[{pip_idx}:v]scale={pw}:{ph}:force_original_aspect_ratio=decrease,setsar=1"
-            
+            # 2. PiP Scale
+            ov_info = await get_video_info(c.overlay_source)
+            pip_scale = f"[{pip_idx}:v]{build_hw_scale_pip(HW_INFO['engine'], ov_info.get('width', 1920), ov_info.get('height', 1080), pw, ph)}"
             filters.append(f"{pip_scale},trim=start={pip_trim:.4f}:duration={needed_dur:.4f},setpts=PTS-STARTPTS[pip_v{i}]")
 
-            # 3. Наложение (Overlay)
-            if HW_INFO["vaapi_supported"] and HW_INFO["vaapi_overlay"]:
-                filters.append(f"{cur_v}format=nv12,hwupload[bg_v{i}]")
-                filters.append(f"[pip_v{i}]format=nv12,hwupload[fg_v{i}]")
-                filters.append(f"[bg_v{i}][fg_v{i}]overlay_vaapi=x={px}:y={py},hwdownload,format=nv12,setsar=1[ovl_v{i}]")
+            # 3. Overlay
+            if HW_INFO["overlay_supported"]:
+                ovl_f = build_hw_overlay(HW_INFO["engine"], cur_v, f"[pip_v{i}]", px, py)
+                filters.extend(ovl_f[:-1])
+                filters.append(f"{ovl_f[-1]}[ovl_v{i}]")
             else:
                 filters.append(f"{cur_v}[pip_v{i}]overlay=x={px}:y={py}:eof_action=pass[ovl_v{i}]")
-            
             cur_v = f"[ovl_v{i}]"
 
         if c.is_fade:
@@ -217,20 +264,30 @@ async def render_preview_chunk(websocket, timeline: List[VideoClip], request_tim
         a_pads.append(cur_a)
 
     v_out_str = f"{''.join(v_pads)}concat=n={len(v_pads)}:v=1:a=0"
-    if HW_INFO["vaapi_supported"]:
+    v_codec = "libx264"
+    if HW_INFO["engine"] == "cuda":
+        v_out_str += ",format=nv12,hwupload_cuda[v_out]"
+        v_codec = "h264_nvenc"
+    elif HW_INFO["engine"] == "vaapi":
         v_out_str += ",format=nv12,hwupload[v_out]"
+        v_codec = "h264_vaapi"
     else:
         v_out_str += "[v_out]"
     filters.append(v_out_str)
     
     filters.append(f"{''.join(a_pads)}concat=n={len(a_pads)}:v=0:a=1[a_out]")
 
-    v_codec = 'h264_vaapi' if HW_INFO["vaapi_supported"] else 'libx264'
     cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'level+time+verbose'] + inputs + \
           ['-filter_complex', ";".join(filters), '-map', '[v_out]', '-map', '[a_out]',
-           '-c:v', v_codec, '-preset', 'ultrafast', '-r', '20', '-crf', '28', '-g', '15', '-c:a', 'aac', '-b:a', '128k', out_file, '-y']
+           '-c:v', v_codec]
     
-    await run_async_command(websocket, cmd, f"TRANSCODING ({seconds_to_hms(request_time)})", is_preview=True)
+    if v_codec == "h264_nvenc": cmd.extend(['-preset', 'p1', '-tune', 'll', '-delay', '0'])
+    elif v_codec == "h264_vaapi": cmd.extend(['-preset', 'ultrafast'])
+    else: cmd.extend(['-preset', 'ultrafast'])
+    
+    cmd.extend(['-r', '20', '-crf', '28', '-g', '15', '-c:a', 'aac', '-b:a', '128k', out_file, '-y'])
+    
+    await run_async_command(websocket, cmd, FFMPEG_PREVIEW_LOG, f"PREVIEW ({seconds_to_hms(request_time)})", is_preview=True)
     return out_file, request_time
 
 class FinalRenderer:
@@ -242,7 +299,7 @@ class FinalRenderer:
         self.temp_files = []
 
     async def render(self):
-        log_debug("[FINAL] Старт рендера")
+        log_debug("[FINAL] Старт финального рендера")
         v1_clip = next((c for c in self.timeline if "Seg" in c.name), self.timeline[0])
         master = await get_video_info(v1_clip.source)
         master_ar = master['width'] / master['height'] if master['height'] > 0 else 1.777
@@ -261,51 +318,45 @@ class FinalRenderer:
                 save_dir = self.out_dir if c.duration > 60 else self.tmp_dir
                 out = os.path.join(save_dir, f"compat_{i}_{str(uuid.uuid4())[:4]}.mkv"); self.temp_files.append(out)
                 
-                cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-stats']
-                if HW_INFO["vaapi_supported"]:
+                cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'verbose', '-stats']
+                if HW_INFO["engine"] == "cuda":
+                    cmd.extend(['-init_hw_device', 'cuda=cu:0', '-filter_hw_device', 'cu'])
+                elif HW_INFO["engine"] == "vaapi":
                     cmd.extend(['-init_hw_device', f'vaapi=va:{HW_INFO["device"]}', '-filter_hw_device', 'va'])
                 
                 cmd.extend(['-ss', f"{c.source_start:.4f}", '-i', c.source])
                 if c.has_overlay: cmd.extend(['-ss', f"{c.overlay_source_start:.4f}", '-i', c.overlay_source])
                 cmd.extend(['-t', f"{c.duration:.4f}"])
                 
-                # Аналогичная гибридная логика для финального рендера
-                if HW_INFO["vaapi_supported"]:
-                    # FIX: Используем scale_vaapi + CPU pad для правильного AR
-                    vf = [f"[0:v]{get_vaapi_scale_pad_hybrid(target_w, target_h)},fps={master['fps']}[base_v]"]
-                    cur_v = "[base_v]"
-                    if c.has_overlay:
-                        ov_info = await get_video_info(c.overlay_source)
-                        ov_ar = ov_info.get('width', 1920)/ov_info.get('height', 1080) if ov_info.get('height', 1)>0 else 1.777
-                        pw = int(target_w * c.overlay_w); ph = int(pw / ov_ar); pw -= pw % 2; ph -= ph % 2
-                        px = int(target_w * c.overlay_x); py = int(target_h * c.overlay_y)
-                        
-                        vf.append(f"[1:v]format=nv12,hwupload,scale_vaapi={pw}:{ph},hwdownload,format=nv12,setsar=1,fps={master['fps']}[pip_v]")
-                        if HW_INFO["vaapi_overlay"]:
-                            vf.append(f"{cur_v}format=nv12,hwupload[bg_v]")
-                            vf.append(f"[pip_v]format=nv12,hwupload[fg_v]")
-                            vf.append(f"[bg_v][fg_v]overlay_vaapi=x={px}:y={py},hwdownload,format=nv12,setsar=1[ovl_v]")
-                        else:
-                            vf.append(f"{cur_v}[pip_v]overlay=x={px}:y={py}:eof_action=pass[ovl_v]")
-                        cur_v = "[ovl_v]"
-                else:
-                    vf = [f"[0:v]{get_scale_pad_filter(target_w, target_h)},fps={master['fps']}[base_v]"]
-                    cur_v = "[base_v]"
-                    if c.has_overlay:
-                        ov_info = await get_video_info(c.overlay_source)
-                        ov_ar = ov_info.get('width', 1920)/ov_info.get('height', 1080) if ov_info.get('height', 1)>0 else 1.777
-                        pw = int(target_w * c.overlay_w); ph = int(pw / ov_ar); pw -= pw % 2; ph -= ph % 2
-                        px = int(target_w * c.overlay_x); py = int(target_h * c.overlay_y)
-                        vf.append(f"[1:v]scale={pw}:{ph}:force_original_aspect_ratio=decrease,setsar=1,fps={master['fps']}[pip_v]")
+                vf = [f"[0:v]{build_hw_scale_pad(HW_INFO['engine'], c.width, c.height, target_w, target_h)},fps={master['fps']}[base_v]"]
+                cur_v = "[base_v]"
+                
+                if c.has_overlay:
+                    ov_info = await get_video_info(c.overlay_source)
+                    pw = int(target_w * c.overlay_w); ph = int(pw * (9/16)); pw -= pw % 2; ph -= ph % 2
+                    px = int(target_w * c.overlay_x); py = int(target_h * c.overlay_y)
+                    vf.append(f"[1:v]{build_hw_scale_pip(HW_INFO['engine'], ov_info.get('width',1920), ov_info.get('height',1080), pw, ph)},fps={master['fps']}[pip_v]")
+                    
+                    if HW_INFO["overlay_supported"]:
+                        ovl_f = build_hw_overlay(HW_INFO["engine"], cur_v, "[pip_v]", px, py)
+                        vf.extend(ovl_f[:-1])
+                        vf.append(f"{ovl_f[-1]}[ovl_v]")
+                    else:
                         vf.append(f"{cur_v}[pip_v]overlay=x={px}:y={py}:eof_action=pass[ovl_v]")
-                        cur_v = "[ovl_v]"
+                    cur_v = "[ovl_v]"
 
                 if c.fade_in: vf.append(f"{cur_v}fade=in:st=0:d={FADE_DURATION}[fv_in]"); cur_v = "[fv_in]"
                 if c.fade_out: vf.append(f"{cur_v}fade=out:st={c.duration-FADE_DURATION:.4f}:d={FADE_DURATION}[fv_out]"); cur_v = "[fv_out]"
                 
-                if HW_INFO["vaapi_supported"]:
+                v_codec = VIDEO_ENCODER
+                if HW_INFO["engine"] == "cuda":
+                    vf.append(f"{cur_v}format=nv12,hwupload_cuda[out_v]")
+                    cur_v = "[out_v]"
+                    v_codec = "h264_nvenc"
+                elif HW_INFO["engine"] == "vaapi":
                     vf.append(f"{cur_v}format=nv12,hwupload[out_v]")
                     cur_v = "[out_v]"
+                    v_codec = "h264_vaapi"
                 
                 af = [f"[0:a]volume={c.volume}[base_a]"]
                 cur_a = "[base_a]"
@@ -315,11 +366,12 @@ class FinalRenderer:
                 if c.fade_in: af.append(f"{cur_a}afade=t=in:st=0:d={FADE_DURATION}[fa_in]"); cur_a = "[fa_in]"
                 if c.fade_out: af.append(f"{cur_a}afade=t=out:st={c.duration-FADE_DURATION:.4f}:d={FADE_DURATION}[fa_out]"); cur_a = "[fa_out]"
 
-                v_codec = 'h264_vaapi' if HW_INFO["vaapi_supported"] else VIDEO_ENCODER
-                cmd.extend(['-filter_complex', f"{';'.join(vf)};{';'.join(af)}", '-map', cur_v, '-map', cur_a, 
-                            '-c:v', v_codec, '-preset', 'ultrafast', '-crf', '18', '-c:a', FINAL_AUDIO_CODEC, out, '-y'])
+                cmd.extend(['-filter_complex', f"{';'.join(vf)};{';'.join(af)}", '-map', cur_v, '-map', cur_a, '-c:v', v_codec])
+                if v_codec == "h264_nvenc": cmd.extend(['-preset', 'p6'])
                 
-                await run_async_command(self.ws, cmd, f"Адаптация: {c.name}")
+                cmd.extend(['-crf', '18', '-c:a', FINAL_AUDIO_CODEC, out, '-y'])
+                
+                await run_async_command(self.ws, cmd, FFMPEG_FINAL_LOG, f"Адаптация: {c.name}")
                 c.source, c.audio_source, c.source_start, c.is_fade, c.has_overlay = out, out, 0.0, False, False
         
         list_file = os.path.join(self.tmp_dir, "concat.txt"); self.temp_files.append(list_file)
@@ -333,10 +385,10 @@ class FinalRenderer:
             a_filters.append(f"[{i+1}:a]atrim=start={c.source_start:.4f}:duration={c.duration:.4f},asetpts=PTS-STARTPTS,volume={c.volume}[a{i}]")
         a_filters.append(f"{''.join(f'[a{i}]' for i in range(len(self.timeline)))}concat=n={len(self.timeline)}:v=0:a=1[aout]")
         
-        final_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info'] + cmd_inputs + \
+        final_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'verbose'] + cmd_inputs + \
                     ['-filter_complex', ";".join(a_filters), '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', FINAL_AUDIO_CODEC, self.output_path, '-y']
         
-        await run_async_command(self.ws, final_cmd, "Финальная склейка")
+        await run_async_command(self.ws, final_cmd, FFMPEG_FINAL_LOG, "Финальная склейка")
         for f in self.temp_files: 
             if os.path.exists(f): 
                 try: os.remove(f)

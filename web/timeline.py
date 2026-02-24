@@ -1,4 +1,3 @@
-
 ## @file timeline.py
 # @brief Модуль анализа видео и построения таймлайна (IR).
 
@@ -22,7 +21,7 @@ async def get_video_info(file_path: str) -> Dict[str, Any]:
         f, s = data.get('format', {}), data.get('streams', [{}])[0]
         fps_raw = s.get('r_frame_rate', '30/1')
         num, den = map(int, fps_raw.split('/'))
-        return {'duration': float(f.get('duration', 0)), 'width': int(s.get('width', 0)), 'height': int(s.get('height', 0)), 'fps': num/den, 'sar': s.get('sample_aspect_ratio', '1:1')}
+        return {'duration': float(f.get('duration', 0)), 'width': int(s.get('width', 1920)), 'height': int(s.get('height', 1080)), 'fps': num/den, 'sar': s.get('sample_aspect_ratio', '1:1')}
     except: return {}
 
 async def analyze_keyframes(file_path: str, cache_dir: str) -> List[float]:
@@ -51,7 +50,7 @@ def hms_to_seconds(time_str: str) -> float:
 class VideoClip:
     def __init__(self, name: str, source: str, duration: float, source_start: float = 0.0, 
                  is_fade: bool = False, volume: float = 1.0, audio_source: Optional[str] = None,
-                 color: str = "blue"):
+                 color: str = "blue", width: int = 1920, height: int = 1080):
         self.uuid = str(uuid.uuid4())[:8]
         self.name = name
         self.source = source
@@ -62,6 +61,8 @@ class VideoClip:
         self.volume = volume
         self.color = color 
         self.global_start = 0.0 
+        self.width = width
+        self.height = height
         
         self.fade_in = False
         self.fade_out = False
@@ -70,11 +71,11 @@ class VideoClip:
         self.has_overlay = False
         self.overlay_source = ""
         self.overlay_source_start = 0.0
-        self.overlay_x = 0.7  # % от ширины
-        self.overlay_y = 0.7  # % от высоты
-        self.overlay_w = 0.25 # % от ширины (scale)
+        self.overlay_x = 0.7 
+        self.overlay_y = 0.7 
+        self.overlay_w = 0.25 
         self.overlay_audio = False
-        self.segment_id = None # Для связи UI блоков
+        self.segment_id = None 
 
     def to_dict(self):
         return {
@@ -96,7 +97,6 @@ class TimelineBuilder:
     async def build(self) -> List[VideoClip]:
         timeline = []
         
-        # 1. Intro Logic
         intro_path = self.params.get('intro_file')
         if not intro_path or not os.path.exists(intro_path):
              intro_res = self.params.get('intro_resolution', '2k')
@@ -106,9 +106,8 @@ class TimelineBuilder:
         
         if intro_path and os.path.exists(intro_path):
             info = await get_video_info(intro_path)
-            timeline.append(VideoClip("Intro", intro_path, info.get('duration', 0), color="yellow"))
+            timeline.append(VideoClip("Intro", intro_path, info.get('duration', 0), color="yellow", width=info.get('width',1920), height=info.get('height',1080)))
 
-        # 2. Segments Parsing
         vol = float(self.params.get('volume', 1.0))
         raw_segments = self.params.get('segments_list', [])
 
@@ -120,8 +119,9 @@ class TimelineBuilder:
             t_start = hms_to_seconds(seg.get('start'))
             t_end = hms_to_seconds(seg.get('end'))
             info = await get_video_info(v_path)
+            w, h = info.get('width', 1920), info.get('height', 1080)
+
             if t_end <= t_start: t_end = info.get('duration', 0)
-            
             dur = t_end - t_start
             if dur <= 0: continue
             
@@ -129,7 +129,7 @@ class TimelineBuilder:
             has_pip = bool(pip_data and pip_data.get('video') and os.path.exists(pip_data.get('video')))
 
             if has_pip or dur < FADE_DURATION * 2:
-                c = VideoClip(f"Seg{i+1}_Full", v_path, dur, t_start, is_fade=True, volume=vol, audio_source=a_path, color="lightblue")
+                c = VideoClip(f"Seg{i+1}_Full", v_path, dur, t_start, is_fade=True, volume=vol, audio_source=a_path, color="lightblue", width=w, height=h)
                 c.segment_id = seg.get('id')
                 if dur >= FADE_DURATION * 2: c.fade_in, c.fade_out = True, True
                 if has_pip:
@@ -149,18 +149,18 @@ class TimelineBuilder:
             split_end = next((t for t in reversed(keyframes) if t < t_end - FADE_DURATION), None)
 
             if not split_start or not split_end or split_end <= split_start:
-                c = VideoClip(f"Seg{i+1}_Full", v_path, dur, t_start, is_fade=True, volume=vol, audio_source=a_path, color="lightblue")
+                c = VideoClip(f"Seg{i+1}_Full", v_path, dur, t_start, is_fade=True, volume=vol, audio_source=a_path, color="lightblue", width=w, height=h)
                 c.segment_id = seg.get('id'); c.fade_in, c.fade_out = True, True
                 timeline.append(c)
             else:
-                c_in = VideoClip(f"Seg{i+1}_In", v_path, split_start - t_start, t_start, is_fade=True, volume=vol, audio_source=a_path, color="lightblue")
+                c_in = VideoClip(f"Seg{i+1}_In", v_path, split_start - t_start, t_start, is_fade=True, volume=vol, audio_source=a_path, color="lightblue", width=w, height=h)
                 c_in.segment_id = seg.get('id'); c_in.fade_in = True
                 timeline.append(c_in)
                 
-                c_body = VideoClip(f"Seg{i+1}_Body", v_path, split_end - split_start, split_start, volume=vol, audio_source=a_path, color="blue")
+                c_body = VideoClip(f"Seg{i+1}_Body", v_path, split_end - split_start, split_start, volume=vol, audio_source=a_path, color="blue", width=w, height=h)
                 c_body.segment_id = seg.get('id'); timeline.append(c_body)
                 
-                c_out = VideoClip(f"Seg{i+1}_Out", v_path, t_end - split_end, split_end, is_fade=True, volume=vol, audio_source=a_path, color="lightblue")
+                c_out = VideoClip(f"Seg{i+1}_Out", v_path, t_end - split_end, split_end, is_fade=True, volume=vol, audio_source=a_path, color="lightblue", width=w, height=h)
                 c_out.segment_id = seg.get('id'); c_out.fade_out = True
                 timeline.append(c_out)
 

@@ -209,7 +209,6 @@ button:disabled {
     white-space: pre-wrap;
 }
 
-/* FIX: Specificity for hidden class */
 .hidden {
     display: none !important;
 }
@@ -233,16 +232,54 @@ button:disabled {
     border-radius: 4px;
     width: 90%;
     max-width: 600px;
+    /* Ограничиваем общую высоту модалки для маленьких экранов */
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
     border: 1px solid var(--accent-green);
+    box-sizing: border-box;
+}
+
+/* FIX: Добавлена прокрутка для списка файлов */
+#file-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    margin-top: 10px;
+    margin-bottom: 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    border: 1px solid #333;
+    padding: 5px;
+    /* Улучшение внешнего вида полосы прокрутки */
+}
+
+/* Стилизация скроллбара для современных браузеров */
+#file-list::-webkit-scrollbar {
+    width: 8px;
+}
+#file-list::-webkit-scrollbar-track {
+    background: var(--panel-bg);
+}
+#file-list::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+#file-list::-webkit-scrollbar-thumb:hover {
+    background: var(--accent-purple);
 }
 
 .file-entry {
     cursor: pointer;
-    padding: 6px 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .file-entry:hover {
-    background: rgba(0, 187, 255, 0.15);
+    background: rgba(80, 250, 123, 0.1);
+    color: var(--accent-green);
 }
 
 .time-input-group {
