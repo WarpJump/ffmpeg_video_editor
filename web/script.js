@@ -3,21 +3,14 @@ let segments = [];
 let globalSettings = { introPath: '', outputDir: '', volume: 1.5, useRam: true };
 let currentBrowseId = null;
 let activePipSegmentId = null;
-let dragDebounceTimer = null;
 
-// --- PLAYER DEBUG & STATE ---
+let dragDebounceTimer = null;
 let seekRequestId = 0;
 let preloadRequestId = 0;
-let debug_expectedTime = null;
-let debug_currentReason = "";
 
 function logPlayer(action, reason, details = {}) {
     const time = new Date().toISOString().split('T')[1].slice(0, -1);
-    let color = "#00d8ff";
-    if (action === "REQUEST") color = "#f39c12";
-    if (action === "PLAY") color = "#2ecc71";
-    if (action === "MISMATCH") color = "#e74c3c";
-    if (action === "CACHE_CLEAR") color = "#9b59b6";
+    let color = action === "REQUEST" ? "#f39c12" : action === "PLAY" ? "#2ecc71" : action === "MISMATCH" ? "#e74c3c" : "#00d8ff";
     console.log(`%c[Player ${time}] [${action}] %c${reason}`, `color: ${color}; font-weight: bold;`, `color: white; font-weight: normal;`, details);
 }
 
@@ -26,18 +19,12 @@ function requestPreviewFragment(time, reason, isPreload = false) {
 
     let reqId;
     if (isPreload) {
-        preloadRequestId++;
-        reqId = preloadRequestId;
+        reqId = ++preloadRequestId;
         logPlayer("REQUEST (Preload)", reason, { time, reqId });
     } else {
-        seekRequestId++;
-        reqId = seekRequestId;
-        // КРИТИЧНО: При ручной перемотке мгновенно инвалидируем любые летящие предзагрузки
-        preloadRequestId++;
+        reqId = ++seekRequestId;
+        preloadRequestId++; // Инвалидируем летящие предзагрузки при ручной перемотке
         streamer.nextChunkRequested = false;
-
-        debug_expectedTime = time;
-        debug_currentReason = reason;
         logPlayer("REQUEST", reason, { time, reqId });
     }
 
@@ -50,23 +37,22 @@ function requestPreviewFragment(time, reason, isPreload = false) {
         params: gatherParams()
     }));
 }
+
 const streamer = {
     totalDuration: 0,
     isPlaying: false,
     currentPlayer: null,
     nextPlayer: null,
     currentChunkStartTime: 0,
-    nextChunkStartTime: -1, // ДОБАВЛЕНО: хранилище времени предзагрузки
-    fragmentDuration: 10.0, // Добавлено строгое значение по умолчанию
+    nextChunkStartTime: -1,
+    fragmentDuration: 10.0,
     isLoading: false,
-    nextChunkRequested: false, // Флаг "Запрос отправлен, но ответ еще не обработан"
+    nextChunkRequested: false,
     clips: [],
 
     init: function () {
         this.currentPlayer = document.getElementById('videoPlayerA');
         this.nextPlayer = document.getElementById('videoPlayerB');
-
-        // Инициализация скрытых полей времени
         this.currentPlayer._chunkStart = -1;
         this.nextPlayer._chunkStart = -1;
 
@@ -82,7 +68,9 @@ const streamer = {
         if (this.isPlaying) {
             if (this.currentPlayer.readyState >= 2) this.currentPlayer.play();
             else this.seek(0, "Нажатие Play (с нуля)");
-        } else this.currentPlayer.pause();
+        } else {
+            this.currentPlayer.pause();
+        }
     },
 
     seek: function (time, reason = "Перемотка") {
@@ -93,34 +81,26 @@ const streamer = {
         this.currentPlayer.pause();
         this.nextPlayer.pause();
 
-        // Сброс буферов
         this.nextChunkRequested = false;
         this.nextChunkStartTime = -1;
-        this.nextPlayer.removeAttribute('src'); // Очистка следующего плеера
+        this.nextPlayer.removeAttribute('src');
         this.nextPlayer._chunkStart = -1;
         this.nextPlayer.load();
 
         requestPreviewFragment(time, reason, false);
     },
+
     onChunkReady: function (data) {
-        // Проверяем, не принадлежит ли кусок отмененной операции
         if (data.is_preload) {
-            if (data.request_id !== preloadRequestId) {
-                logPlayer("MISMATCH", "Отброшена устаревшая предзагрузка.", { id: data.request_id });
-                return;
-            }
+            if (data.request_id !== preloadRequestId) return logPlayer("MISMATCH", "Отброшена устаревшая предзагрузка.", { id: data.request_id });
         } else {
-            if (data.request_id !== seekRequestId) {
-                logPlayer("MISMATCH", "Отброшен устаревший фрагмент перемотки.", { id: data.request_id });
-                return;
-            }
+            if (data.request_id !== seekRequestId) return logPlayer("MISMATCH", "Отброшен устаревший фрагмент перемотки.", { id: data.request_id });
         }
 
         const url = `http://${window.location.host}/video?path=${encodeURIComponent(data.relative_path)}&t=${Date.now()}`;
         const chunkStart = data.start_time;
 
         if (!data.is_preload) {
-            // --- DIRECT PLAY (Seek) ---
             logPlayer("PLAY", `Загружаем фрагмент (Seek).`, { time: chunkStart });
             document.getElementById('loading-overlay').style.display = 'none';
             this.isLoading = false;
@@ -131,11 +111,9 @@ const streamer = {
 
             this.currentPlayer.onloadedmetadata = () => {
                 this.currentPlayer.currentTime = 0;
-                if (this.isPlaying) this.currentPlayer.play().catch(e => console.log(e));
+                if (this.isPlaying) this.currentPlayer.play().catch(console.log);
             };
         } else {
-            // --- PRELOAD BUFFER ---
-            // СТРОГАЯ МАТЕМАТИКА: ожидаем строго текущий старт + размер фрагмента (10.0)
             const expectedNext = this.currentChunkStartTime + this.fragmentDuration;
             if (Math.abs(chunkStart - expectedNext) < 2.0) {
                 logPlayer("PLAY (Buffer)", "Предзагруженный фрагмент сохранен.", { time: chunkStart });
@@ -157,7 +135,6 @@ const streamer = {
 
     hasNextChunkBuffered: function () {
         if (!this.currentPlayer) return false;
-        // СТРОГАЯ МАТЕМАТИКА
         const nextStartTime = this.currentChunkStartTime + this.fragmentDuration;
         return Math.abs(this.nextPlayer._chunkStart - nextStartTime) < 1.0 && this.nextPlayer.readyState >= 0;
     },
@@ -168,7 +145,6 @@ const streamer = {
         const playerTime = this.currentPlayer.currentTime;
         if (!isFinite(playerTime)) return;
 
-
         if (playerTime >= this.fragmentDuration && (this.currentChunkStartTime + this.fragmentDuration) < this.totalDuration) {
             this.swap();
             return;
@@ -176,14 +152,12 @@ const streamer = {
 
         const globalTime = this.currentChunkStartTime + playerTime;
 
-        // Timeline UI
         if (this.totalDuration > 0) {
             const percent = (globalTime / this.totalDuration) * 100;
             document.getElementById('timeline-cursor').style.left = percent + '%';
             document.getElementById('v-time').textContent = `${formatTime(globalTime)} / ${formatTime(this.totalDuration)}`;
         }
 
-        // PiP Logic
         const activeClip = this.clips.find(c => globalTime >= c.global_start && globalTime < (c.global_start + c.duration));
         if (activeClip && activeClip.has_overlay && activeClip.segment_id && !isDraggingBox && !isResizingBox) {
             showPipBox(activeClip.segment_id, activeClip.overlay_coords);
@@ -191,18 +165,16 @@ const streamer = {
             if (!isDraggingBox && !isResizingBox) hidePipBox();
         }
 
-        // Preload Logic (Основанная на строгом шаге)
         const remaining = this.fragmentDuration - playerTime;
         if (remaining < 5 && !this.nextChunkRequested && !this.hasNextChunkBuffered() && (this.currentChunkStartTime + this.fragmentDuration) < this.totalDuration - 0.5) {
             const nextStart = this.currentChunkStartTime + this.fragmentDuration;
             this.nextChunkRequested = true;
             this.nextChunkStartTime = nextStart;
-
             requestPreviewFragment(nextStart, "Авто-предзагрузка (Next Chunk)", true);
         }
     },
-swap: function () {
-        // Проверка абсолютного окончания всего видео
+
+    swap: function () {
         if (this.currentChunkStartTime + this.currentPlayer.currentTime >= this.totalDuration - 0.5) {
             logPlayer("PLAY", "Конец видео.");
             this.isPlaying = false;
@@ -212,7 +184,6 @@ swap: function () {
         }
 
         const expectedNextTime = this.currentChunkStartTime + this.fragmentDuration;
-
         const isNextReady = this.nextPlayer.readyState >= 2 || (this.nextPlayer.readyState >= 0 && this.nextPlayer.currentSrc);
         const isTimeCorrect = Math.abs(this.nextPlayer._chunkStart - expectedNextTime) < 1.0;
 
@@ -228,9 +199,8 @@ swap: function () {
             this.nextPlayer.style.display = 'block';
 
             this.currentChunkStartTime = expectedNextTime; 
-            
             this.nextPlayer.currentTime = 0;
-            this.nextPlayer.play().catch(e => console.log(e));
+            this.nextPlayer.play().catch(console.log);
             this.currentPlayer.pause();
 
             const temp = this.currentPlayer;
@@ -249,11 +219,11 @@ swap: function () {
 
         } else {
             if (this.nextChunkRequested && Math.abs(this.nextChunkStartTime - expectedNextTime) < 1.0) {
-                logPlayer("PLAY", "Swap: Ждем уже запрошенный буфер (не спамим сервер).", { expected: expectedNextTime });
+                logPlayer("PLAY", "Swap: Ждем запрошенный буфер.");
                 this.isLoading = true;
                 document.getElementById('loading-overlay').style.display = 'flex';
             } else {
-                logPlayer("PLAY", "Swap: Буфер потерян. Принудительная загрузка.", { expected: expectedNextTime });
+                logPlayer("PLAY", "Swap: Буфер потерян. Перезагрузка.");
                 this.isLoading = true;
                 document.getElementById('loading-overlay').style.display = 'flex';
                 this.seek(expectedNextTime, "Swap Fail Recovery");
@@ -286,26 +256,32 @@ function handleWSMessage(data) {
         }
         log.scrollTop = log.scrollHeight;
     } else if (data.action === 'config_info') {
-        if (data.default_intro) { globalSettings.introPath = data.default_intro; document.getElementById('intro_file_path').textContent = data.default_intro + " (Стандартное)"; }
+        if (data.default_intro) { 
+            globalSettings.introPath = data.default_intro; 
+            document.getElementById('intro_file_path').textContent = data.default_intro + " (Стандартное)"; 
+        }
         document.getElementById('output_dir_path').textContent = data.default_output;
         globalSettings.outputDir = data.default_output;
-    } else if (data.action === 'browse_result') { renderFileList(data); }
-    else if (data.action === 'path_resolved') { applySelectedPath(data.full_path); }
-    else if (data.action === 'preview_map_ready') {
+    } else if (data.action === 'browse_result') { 
+        renderFileList(data); 
+    } else if (data.action === 'path_resolved') { 
+        applySelectedPath(data.full_path); 
+    } else if (data.action === 'preview_map_ready') {
         streamer.totalDuration = data.total_duration;
-        streamer.fragmentDuration = data.fragment_duration || 10.0; // ДОБАВИТЬ ЭТО
+        streamer.fragmentDuration = data.fragment_duration || 10.0;
         streamer.clips = data.clips;
         renderTimelineVisual(data.clips, data.total_duration);
         document.querySelector('.virtual-player-container').style.display = 'block';
         document.getElementById('v-time').textContent = `00:00 / ${formatTime(data.total_duration)}`;
-    } else if (data.action === 'preview_fragment_ready') { streamer.onChunkReady(data); }
-    else if (data.action === 'finished') {
+    } else if (data.action === 'preview_fragment_ready') { 
+        streamer.onChunkReady(data); 
+    } else if (data.action === 'finished') {
         document.getElementById('submitBtn').disabled = false;
         document.getElementById('submitBtn').textContent = 'Начать Обработку';
     }
 }
 
-// --- UI Functions (Add/Remove Segments, etc) ---
+// --- UI Functions ---
 function addSegment() {
     if (segments.length >= 10) return alert("Максимум 10 сегментов");
     const id = Date.now().toString();
@@ -316,39 +292,39 @@ function addSegment() {
     const div = document.createElement('div');
     div.className = 'segment-block'; div.id = `seg-${id}`;
     div.innerHTML = `
-                <div class="segment-header">
-                    <span class="segment-title">${visualNum}. Фрагмент видео</span>
-                    <button class="remove-seg-btn" onclick="removeSegment('${id}')">✕</button>
+        <div class="segment-header">
+            <span class="segment-title">${visualNum}. Фрагмент видео</span>
+            <button class="remove-seg-btn" onclick="removeSegment('${id}')">✕</button>
+        </div>
+        <div>
+            <button onclick="browse('${id}', 'video')">📹 Основное видео...</button>
+            <div id="path-video-${id}" class="file-path-display">${defaultVideo || '(не выбрано)'}</div>
+        </div>
+        <div style="margin-top:10px;">
+            <div class="time-input-group">
+                <label style="width:60px;">Начало:</label>
+                <input type="text" id="start-${id}" placeholder="00:00:00" onchange="updateSeg('${id}', 'start', this.value)">
+                <button class="jump-btn" onclick="previewJump('${id}', 'start')">▶</button>
+            </div>
+            <div class="time-input-group">
+                <label style="width:60px;">Конец:</label>
+                <input type="text" id="end-${id}" placeholder="Конец файла" onchange="updateSeg('${id}', 'end', this.value)">
+                <button class="jump-btn" onclick="previewJump('${id}', 'end')">▶</button>
+            </div>
+        </div>
+        <div class="pip-settings-block">
+            <label><input type="checkbox" id="pip-enable-${id}" onchange="togglePiP('${id}')"> 📸 Поверх экрана (Камера PiP)</label>
+            <div id="pip-panel-${id}" class="hidden" style="margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 10px;">
+                <button onclick="browse('${id}', 'overlay')">Выбрать видео камеры...</button>
+                <div id="path-overlay-${id}" class="file-path-display">(не выбрано)</div>
+                <div style="display: flex; gap: 10px; margin-top: 10px; margin-bottom: 10px;">
+                    <input type="text" id="pip-start-${id}" placeholder="Старт камеры (00:00)" onchange="updateSeg('${id}', 'pip_start', this.value)" style="flex:1;">
+                    <input type="text" id="pip-end-${id}" placeholder="Конец камеры (Опц.)" onchange="updateSeg('${id}', 'pip_end', this.value)" style="flex:1;">
                 </div>
-                <div>
-                    <button onclick="browse('${id}', 'video')">📹 Основное видео...</button>
-                    <div id="path-video-${id}" class="file-path-display">${defaultVideo || '(не выбрано)'}</div>
-                </div>
-                <div style="margin-top:10px;">
-                    <div class="time-input-group">
-                        <label style="width:60px;">Начало:</label>
-                        <input type="text" id="start-${id}" placeholder="00:00:00" onchange="updateSeg('${id}', 'start', this.value)">
-                        <button class="jump-btn" onclick="previewJump('${id}', 'start')">▶</button>
-                    </div>
-                    <div class="time-input-group">
-                        <label style="width:60px;">Конец:</label>
-                        <input type="text" id="end-${id}" placeholder="Конец файла" onchange="updateSeg('${id}', 'end', this.value)">
-                        <button class="jump-btn" onclick="previewJump('${id}', 'end')">▶</button>
-                    </div>
-                </div>
-                <div style="margin-top:10px; padding: 10px; background: #333; border-radius: 4px; border: 1px dashed #555;">
-                    <label><input type="checkbox" id="pip-enable-${id}" onchange="togglePiP('${id}')"> 📸 Поверх экрана (Камера PiP)</label>
-                    <div id="pip-panel-${id}" class="hidden" style="margin-top: 10px; border-top: 1px solid #444; padding-top: 10px;">
-                        <button onclick="browse('${id}', 'overlay')" style="background: var(--border-color);">Выбрать видео камеры...</button>
-                        <div id="path-overlay-${id}" class="file-path-display" style="border:none; background:#222;">(не выбрано)</div>
-                        <div style="display: flex; gap: 10px; margin-top: 10px; margin-bottom: 10px;">
-                            <input type="text" id="pip-start-${id}" placeholder="Старт камеры (00:00)" onchange="updateSeg('${id}', 'pip_start', this.value)" style="flex:1;">
-                            <input type="text" id="pip-end-${id}" placeholder="Конец камеры (Опц.)" onchange="updateSeg('${id}', 'pip_end', this.value)" style="flex:1;">
-                        </div>
-                        <div style="font-size: 0.85em; color: #aaa; margin-bottom: 10px;">ℹ️ Разместите и измените размер камеры прямо на окне предпросмотра справа.</div>
-                        <label><input type="checkbox" id="pip-audio-${id}" onchange="requestPreviewMap()"> Микшировать звук камеры с основным</label>
-                    </div>
-                </div>`;
+                <div style="font-size: 0.85em; color: var(--text-muted); margin-bottom: 10px;">ℹ️ Разместите и измените размер камеры прямо на окне предпросмотра справа.</div>
+                <label><input type="checkbox" id="pip-audio-${id}" onchange="requestPreviewMap()"> Микшировать звук камеры с основным</label>
+            </div>
+        </div>`;
     document.getElementById('segments-container').appendChild(div);
 }
 
@@ -387,12 +363,15 @@ function browse(segId, type) {
     if (type === 'output') document.getElementById('select-dir-confirm').classList.remove('hidden');
     ws.send(JSON.stringify({ action: 'browse_path', path: '/', id: type === 'output' ? 'output_dir' : 'input' }));
 }
+
 function selectFile(type) { browse(null, type === 'intro_file' ? 'intro' : 'output'); }
 function selectDirectory(type) { browse(null, 'output'); }
 
+// --- PiP UI Logic ---
 const pipBox = document.getElementById('pip-overlay-box');
 const videoWrapper = document.getElementById('video-wrapper');
-let isDraggingBox = false; let isResizingBox = false;
+let isDraggingBox = false; 
+let isResizingBox = false;
 let startX, startY, startLeft, startTop, startWidth;
 
 function showPipBox(segId, coords) {
@@ -405,24 +384,32 @@ function showPipBox(segId, coords) {
     pipBox.style.height = (coords.w * 100) + '%';
     document.getElementById('pip-hint-text').textContent = `Камера (Сегм ${segments.findIndex(s => s.id === segId) + 1})`;
 }
-function hidePipBox() { activePipSegmentId = null; pipBox.style.display = 'none'; }
+
+function hidePipBox() { 
+    activePipSegmentId = null; 
+    pipBox.style.display = 'none'; 
+}
 
 function updateLocalStateFromDom() {
     if (!activePipSegmentId) return;
     const x = parseFloat(pipBox.style.left) / 100;
     const y = parseFloat(pipBox.style.top) / 100;
     const w = parseFloat(pipBox.style.width) / 100;
+    
     const seg = segments.find(s => s.id === activePipSegmentId);
     if (seg) { seg.pip_x = x; seg.pip_y = y; seg.pip_w = w; }
+    
     const activeClip = streamer.clips.find(c => c.segment_id === activePipSegmentId);
-    if (activeClip && activeClip.overlay_coords) { activeClip.overlay_coords.x = x; activeClip.overlay_coords.y = y; activeClip.overlay_coords.w = w; }
+    if (activeClip && activeClip.overlay_coords) { 
+        activeClip.overlay_coords.x = x; 
+        activeClip.overlay_coords.y = y; 
+        activeClip.overlay_coords.w = w; 
+    }
 }
 
 function triggerUpdateDebounced(reason, force = false) {
     if (dragDebounceTimer) clearTimeout(dragDebounceTimer);
-
     const delay = force ? 0 : 250;
-
     dragDebounceTimer = setTimeout(() => {
         const currentTimeExact = streamer.currentChunkStartTime + streamer.currentPlayer.currentTime;
         ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() }));
@@ -492,26 +479,99 @@ function gatherParams() {
 
 function submitForm() {
     if (segments.length === 0 || !segments[0].videoPath) return alert('Выберите хотя бы один фрагмент!');
-    document.getElementById('submitBtn').disabled = true; document.getElementById('submitBtn').textContent = 'Обработка...';
+    document.getElementById('submitBtn').disabled = true; 
+    document.getElementById('submitBtn').textContent = 'Обработка...';
     ws.send(JSON.stringify({ action: 'process', params: gatherParams() }));
 }
 
-function requestPreviewMap() { if (segments.some(s => s.videoPath)) ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() })); }
-function renderFileList(data) { const list = document.getElementById('file-list'); list.innerHTML = ''; document.getElementById('current-path').value = data.path; if (data.path !== '/') { const up = document.createElement('div'); up.className = 'file-entry'; up.textContent = '.. (Назад)'; up.onclick = () => ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/..', id: 'nav' })); list.appendChild(up); } data.entries.forEach(entry => { const div = document.createElement('div'); div.className = 'file-entry'; div.textContent = (entry.type === 'dir' ? '📁 ' : '📄 ') + entry.name; div.onclick = () => { if (entry.type === 'dir') ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/' + entry.name, id: 'nav' })); else ws.send(JSON.stringify({ action: 'resolve_path', path: data.path + '/' + entry.name, id: 'file' })); }; list.appendChild(div); }); document.getElementById('select-dir-confirm').onclick = () => ws.send(JSON.stringify({ action: 'resolve_path', path: data.path, id: 'dir' })); }
-function applySelectedPath(path) { document.getElementById('file-modal').classList.add('hidden'); if (currentBrowseId.type === 'intro') { globalSettings.introPath = path; document.getElementById('intro_file_path').textContent = path; } else if (currentBrowseId.type === 'output') { globalSettings.outputDir = path; document.getElementById('output_dir_path').textContent = path; } else { const seg = segments.find(s => s.id === currentBrowseId.segId); if (seg) { if (currentBrowseId.type === 'video') { seg.videoPath = path; document.getElementById(`path-video-${seg.id}`).textContent = path; } else if (currentBrowseId.type === 'overlay') { seg.overlayPath = path; document.getElementById(`path-overlay-${seg.id}`).textContent = path; } } } requestPreviewMap(); }
-function renderTimelineVisual(clips, totalDuration) { const trackContainer = document.getElementById('timeline-tracks'); trackContainer.innerHTML = ''; clips.forEach(clip => { const block = document.createElement('div'); block.className = `timeline-block color-${clip.color}`; if (clip.has_overlay) block.style.backgroundColor = 'var(--accent-pink)'; block.style.width = (clip.duration / totalDuration) * 100 + '%'; block.title = `${clip.name} (${formatTime(clip.duration)})`; block.innerHTML = `<span class="block-label">${clip.name}</span>`; trackContainer.appendChild(block); }); }
+function requestPreviewMap() { 
+    if (segments.some(s => s.videoPath)) {
+        ws.send(JSON.stringify({ action: 'generate_preview_map', params: gatherParams() })); 
+    }
+}
+
+function renderFileList(data) { 
+    const list = document.getElementById('file-list'); 
+    list.innerHTML = ''; 
+    document.getElementById('current-path').value = data.path; 
+    
+    if (data.path !== '/') { 
+        const up = document.createElement('div'); 
+        up.className = 'file-entry'; 
+        up.textContent = '.. (Назад)'; 
+        up.onclick = () => ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/..', id: 'nav' })); 
+        list.appendChild(up); 
+    } 
+    
+    data.entries.forEach(entry => { 
+        const div = document.createElement('div'); 
+        div.className = 'file-entry'; 
+        div.textContent = (entry.type === 'dir' ? '📁 ' : '📄 ') + entry.name; 
+        div.onclick = () => { 
+            if (entry.type === 'dir') {
+                ws.send(JSON.stringify({ action: 'browse_path', path: data.path + '/' + entry.name, id: 'nav' })); 
+            } else {
+                ws.send(JSON.stringify({ action: 'resolve_path', path: data.path + '/' + entry.name, id: 'file' })); 
+            }
+        }; 
+        list.appendChild(div); 
+    }); 
+    
+    document.getElementById('select-dir-confirm').onclick = () => {
+        ws.send(JSON.stringify({ action: 'resolve_path', path: data.path, id: 'dir' })); 
+    };
+}
+
+function applySelectedPath(path) { 
+    document.getElementById('file-modal').classList.add('hidden'); 
+    
+    if (currentBrowseId.type === 'intro') { 
+        globalSettings.introPath = path; 
+        document.getElementById('intro_file_path').textContent = path; 
+    } else if (currentBrowseId.type === 'output') { 
+        globalSettings.outputDir = path; 
+        document.getElementById('output_dir_path').textContent = path; 
+    } else { 
+        const seg = segments.find(s => s.id === currentBrowseId.segId); 
+        if (seg) { 
+            if (currentBrowseId.type === 'video') { 
+                seg.videoPath = path; 
+                document.getElementById(`path-video-${seg.id}`).textContent = path; 
+            } else if (currentBrowseId.type === 'overlay') { 
+                seg.overlayPath = path; 
+                document.getElementById(`path-overlay-${seg.id}`).textContent = path; 
+            } 
+        } 
+    } 
+    requestPreviewMap(); 
+}
+
+function renderTimelineVisual(clips, totalDuration) { 
+    const trackContainer = document.getElementById('timeline-tracks'); 
+    trackContainer.innerHTML = ''; 
+    
+    clips.forEach(clip => { 
+        const block = document.createElement('div'); 
+        block.className = `timeline-block color-${clip.color}`; 
+        if (clip.has_overlay) block.style.backgroundColor = 'var(--accent-pink)'; 
+        block.style.width = (clip.duration / totalDuration) * 100 + '%'; 
+        block.title = `${clip.name} (${formatTime(clip.duration)})`; 
+        block.innerHTML = `<span class="block-label">${clip.name}</span>`; 
+        trackContainer.appendChild(block); 
+    }); 
+}
+
 function setupTimelineInteraction() {
     const timeline = document.getElementById('timeline-visual');
     let isDragging = false;
     let scrubTimer = null;
-    let lastSentTime = -1; // Щит от одинаковых дублирующихся запросов
+    let lastSentTime = -1; 
 
     const updateVisuals = (e) => {
         const rect = timeline.getBoundingClientRect();
         const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
         const time = (x / rect.width) * streamer.totalDuration;
 
-        // Визуально ползунок бегает моментально при любом движении
         if (streamer.totalDuration > 0) {
             const percent = (time / streamer.totalDuration) * 100;
             document.getElementById('timeline-cursor').style.left = percent + '%';
@@ -521,44 +581,56 @@ function setupTimelineInteraction() {
     };
 
     const triggerSeek = (time, reason) => {
-        // Если мы уже только что запросили ровно это же время, игнорируем (погрешность 0.1 сек)
         if (Math.abs(lastSentTime - time) < 0.1) return;
-
         lastSentTime = time;
         streamer.seek(time, reason);
     };
 
-    // 1. НАЖАТИЕ: Ничего не просим у сервера, только обновляем картинку ползунка
     timeline.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return; // Реагируем только на ЛКМ
+        if (e.button !== 0) return; 
         isDragging = true;
         updateVisuals(e);
     });
 
-    // 2. ДВИЖЕНИЕ МЫШИ (Перетаскивание ползунка с зажатой кнопкой)
     document.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
         const time = updateVisuals(e);
 
         if (scrubTimer) clearTimeout(scrubTimer);
-        // Дергаем сервер только если пользователь при перетаскивании остановил мышь на 300мс
         scrubTimer = setTimeout(() => triggerSeek(time, "Timeline Drag"), 300);
     });
 
-    // 3. ОТПУСКАНИЕ (Конец клика или перетаскивания)
     document.addEventListener('mouseup', (e) => {
         if (!isDragging) return;
         isDragging = false;
         const time = updateVisuals(e);
 
-        // Отменяем таймер движения, чтобы запросы не скрестились
         if (scrubTimer) clearTimeout(scrubTimer);
-
-        // Гарантированно шлем ровно ОДИН финальный запрос
         triggerSeek(time, "Timeline Drop");
     });
 }
-function previewJump(segId, field) { const segIdx = segments.findIndex(s => s.id === segId); const targetNameStart = `Seg${segIdx + 1}`; const targetClip = streamer.clips.find(c => c.name.startsWith(targetNameStart)); if (targetClip) { let time = targetClip.global_start; if (field === 'end') { const lastClip = streamer.clips.slice().reverse().find(c => c.name.startsWith(targetNameStart)); if (lastClip) time = lastClip.global_start + lastClip.duration - 5; } streamer.seek(time, "Jump Button"); } }
-function formatTime(s) { const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return `${m}:${sec.toString().padStart(2, '0')}`; }
+
+function previewJump(segId, field) { 
+    const segIdx = segments.findIndex(s => s.id === segId); 
+    const targetNameStart = `Seg${segIdx + 1}`; 
+    const targetClip = streamer.clips.find(c => c.name.startsWith(targetNameStart)); 
+    
+    if (targetClip) { 
+        let time = targetClip.global_start; 
+        if (field === 'end') { 
+            const lastClip = streamer.clips.slice().reverse().find(c => c.name.startsWith(targetNameStart)); 
+            if (lastClip) time = lastClip.global_start + lastClip.duration - 5; 
+        } 
+        streamer.seek(time, "Jump Button"); 
+    } 
+}
+
+function formatTime(s) { 
+    const m = Math.floor(s / 60); 
+    const sec = Math.floor(s % 60); 
+    return `${m}:${sec.toString().padStart(2, '0')}`; 
+}
+
+// Базовые события модального окна
 document.getElementById('close-modal').onclick = () => document.getElementById('file-modal').classList.add('hidden');
 document.getElementById('up-btn').onclick = () => ws.send(JSON.stringify({ action: 'browse_path', path: document.getElementById('current-path').value + '/..', id: 'nav' }));

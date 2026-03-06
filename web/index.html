@@ -1,27 +1,28 @@
 <!DOCTYPE html>
 <html lang="ru">
-
 <head>
     <meta charset="UTF-8">
     <title>Видео Редактор</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
-
 </head>
-
 <body>
+    <button class="theme-toggle-btn" onclick="document.documentElement.setAttribute('data-theme', document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark')">🌓 Сменить тему</button>
+    
     <h1>FFmaximum</h1>
     <div class="container">
         <div class="form-column">
             <fieldset>
                 <legend>Настройки</legend>
-                <div><input type="checkbox" id="use_ram" checked><label for="use_ram"> RAM-диск (/dev/shm)</label></div>
-                <div style="margin-top:10px;">
-                    <label>Громкость основного видео: <span id="vol_val">1.5x</span></label>
-                    <input type="range" id="vol_slider" min="1.0" max="4.0" step="0.1" value="1.5"
-                        oninput="updateVol()">
+                <div>
+                    <input type="checkbox" id="use_ram" checked>
+                    <label for="use_ram"> RAM-диск (/dev/shm)</label>
                 </div>
-                <div style="margin-top:10px; border-top: 1px dashed #444; padding-top: 10px;">
+                <div class="setting-group">
+                    <label>Громкость основного видео: <span id="vol_val">1.5x</span></label>
+                    <input type="range" id="vol_slider" min="1.0" max="4.0" step="0.1" value="1.5" oninput="updateVol()">
+                </div>
+                <div class="setting-group border-top">
                     <label>Папка сохранения:</label>
                     <button type="button" onclick="selectDirectory('output_dir')">Выбрать папку...</button>
                     <div id="output_dir_path" class="file-path-display">(Загрузка...)</div>
@@ -34,18 +35,17 @@
                     <div>
                         <button type="button" onclick="selectFile('intro_file')">Выбрать файл интро...</button>
                         <div id="intro_file_path" class="file-path-display">(Загрузка...)</div>
-                        <div>
-                            <input type="radio" id="res_2k" name="intro_res" value="2k" checked
-                                onchange="requestPreviewMap()"><label for="res_2k">2K (AR Match)</label>
-                            <input type="radio" id="res_fhd" name="intro_res" value="fullhd"
-                                onchange="requestPreviewMap()"><label for="res_fhd">FullHD (AR Match)</label>
+                        <div class="radio-group">
+                            <input type="radio" id="res_2k" name="intro_res" value="2k" checked onchange="requestPreviewMap()">
+                            <label for="res_2k">2K (AR Match)</label>
+                            <input type="radio" id="res_fhd" name="intro_res" value="fullhd" onchange="requestPreviewMap()">
+                            <label for="res_fhd">FullHD (AR Match)</label>
                         </div>
                     </div>
                 </div>
                 <div id="segments-container"></div>
-                <button type="button" id="add-seg-btn" onclick="addSegment()"
-                    style="background: #27ae60; color: white; font-weight: bold; padding: 10px;">+ Добавить следующий
-                    фрагмент</button>
+                <!-- Используем класс action-btn для красивой кнопки -->
+                <button type="button" id="add-seg-btn" class="action-btn" onclick="addSegment()">+ Добавить следующий фрагмент</button>
             </div>
             <button type="button" id="submitBtn" class="action-btn" onclick="submitForm()">Начать Обработку</button>
         </div>
@@ -53,11 +53,9 @@
         <div class="preview-column">
             <h2>Предпросмотр</h2>
             <div class="video-container" id="video-wrapper">
-                <div id="loading-overlay"
-                    style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); color:white; justify-content:center; align-items:center; z-index: 100;">
-                    Загрузка...</div>
+                <div id="loading-overlay">Загрузка...</div>
                 <video id="videoPlayerA" playsinline></video>
-                <video id="videoPlayerB" style="display:none;" playsinline></video>
+                <video id="videoPlayerB" style="display: none;" playsinline></video>
                 <div id="pip-overlay-box">
                     <div class="pip-hint" id="pip-hint-text">Камера</div>
                     <div class="pip-handle handle-se" id="pip-handle-se"></div>
@@ -74,33 +72,27 @@
                 </div>
             </div>
             <h3>Лог</h3>
-            <pre id="log-output"
-                style="height:300px; overflow-y:scroll; background:#1b1e20; padding:10px; color:#ccc; font-family: monospace; font-size: 0.9em;"></pre>
+            <pre id="log-output"></pre>
         </div>
     </div>
 
-    <!-- Modal and Scripts -->
+    <!-- Модальное окно файлов -->
     <div id="file-modal" class="modal-backdrop hidden">
         <div class="modal-content">
             <h3>Выбор файла</h3>
-            <div style="display:flex; gap:5px; margin-bottom:10px;">
+            <div class="modal-header-row">
                 <input id="current-path" type="text" value="/">
-                <button id="up-btn" style="width:auto;">↑</button>
+                <button id="up-btn">↑</button>
             </div>
             <div id="file-list"></div>
-            <div style="text-align:right;">
-                <button id="close-modal" style="width:auto;">Закрыть</button>
-                <button id="select-dir-confirm" class="hidden"
-                    style="width:auto; background:#007acc; color:white;">Выбрать эту папку</button>
+            <div class="modal-footer-row">
+                <button id="close-modal">Закрыть</button>
+                <button id="select-dir-confirm" class="hidden action-btn">Выбрать эту папку</button>
             </div>
         </div>
     </div>
 
-    <script>
-        const SERVER_PORT = "%%SERVER_PORT%%";
-    </script>
+    <script>const SERVER_PORT = "%%SERVER_PORT%%";</script>
     <script src="script.js"></script>
-
 </body>
-
 </html>
