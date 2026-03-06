@@ -6,7 +6,8 @@ let activePipSegmentId = null;
 let dragDebounceTimer = null;
 
 // --- PLAYER DEBUG & STATE ---
-let globalRequestId = 0;
+let seekRequestId = 0;
+let preloadRequestId = 0;
 let debug_expectedTime = null;
 let debug_currentReason = "";
 
@@ -22,13 +23,22 @@ function logPlayer(action, reason, details = {}) {
 
 function requestPreviewFragment(time, reason, isPreload = false) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (!isPreload) {
-        globalRequestId++;
+
+    let reqId;
+    if (isPreload) {
+        preloadRequestId++;
+        reqId = preloadRequestId;
+        logPlayer("REQUEST (Preload)", reason, { time, reqId });
+    } else {
+        seekRequestId++;
+        reqId = seekRequestId;
+        // КРИТИЧНО: При ручной перемотке мгновенно инвалидируем любые летящие предзагрузки
+        preloadRequestId++;
+        streamer.nextChunkRequested = false;
+
         debug_expectedTime = time;
         debug_currentReason = reason;
-        logPlayer("REQUEST", reason, { time, reqId: globalRequestId });
-    } else {
-        logPlayer("REQUEST (Preload)", reason, { time, reqId: globalRequestId });
+        logPlayer("REQUEST", reason, { time, reqId });
     }
 
     ws.send(JSON.stringify({
@@ -36,11 +46,10 @@ function requestPreviewFragment(time, reason, isPreload = false) {
         start_time: time,
         exact_time: time,
         is_preload: isPreload,
-        request_id: globalRequestId,
+        request_id: reqId,
         params: gatherParams()
     }));
 }
-
 const streamer = {
     totalDuration: 0,
     isPlaying: false,
@@ -48,6 +57,7 @@ const streamer = {
     nextPlayer: null,
     currentChunkStartTime: 0,
     nextChunkStartTime: -1, // ДОБАВЛЕНО: хранилище времени предзагрузки
+    fragmentDuration: 10.0, // Добавлено строгое значение по умолчанию
     isLoading: false,
     nextChunkRequested: false, // Флаг "Запрос отправлен, но ответ еще не обработан"
     clips: [],
@@ -92,12 +102,18 @@ const streamer = {
 
         requestPreviewFragment(time, reason, false);
     },
-
     onChunkReady: function (data) {
-        const receivedId = data.request_id;
-        if (receivedId !== globalRequestId) {
-            logPlayer("MISMATCH", "Получен устаревший фрагмент. Игнорируем.", { receivedId, globalRequestId });
-            return;
+        // Проверяем, не принадлежит ли кусок отмененной операции
+        if (data.is_preload) {
+            if (data.request_id !== preloadRequestId) {
+                logPlayer("MISMATCH", "Отброшена устаревшая предзагрузка.", { id: data.request_id });
+                return;
+            }
+        } else {
+            if (data.request_id !== seekRequestId) {
+                logPlayer("MISMATCH", "Отброшен устаревший фрагмент перемотки.", { id: data.request_id });
+                return;
+            }
         }
 
         const url = `http://${window.location.host}/video?path=${encodeURIComponent(data.relative_path)}&t=${Date.now()}`;
@@ -109,21 +125,18 @@ const streamer = {
             document.getElementById('loading-overlay').style.display = 'none';
             this.isLoading = false;
             this.currentChunkStartTime = chunkStart;
-            this.currentPlayer._chunkStart = chunkStart; // Важно сохранить время
+            this.currentPlayer._chunkStart = chunkStart;
             this.currentPlayer.src = url;
             this.currentPlayer.load();
 
-            const onLoaded = () => {
+            this.currentPlayer.onloadedmetadata = () => {
                 this.currentPlayer.currentTime = 0;
                 if (this.isPlaying) this.currentPlayer.play().catch(e => console.log(e));
-                this.currentPlayer.removeEventListener('loadedmetadata', onLoaded);
             };
-            this.currentPlayer.addEventListener('loadedmetadata', onLoaded);
         } else {
             // --- PRELOAD BUFFER ---
-            // Проверяем, действительно ли этот кусок идет СЛЕДОМ за текущим
-            // (защита от скачков, если вдруг пришел странный таймкод)
-            const expectedNext = this.currentChunkStartTime + (this.currentPlayer.duration || 10);
+            // СТРОГАЯ МАТЕМАТИКА: ожидаем строго текущий старт + размер фрагмента (10.0)
+            const expectedNext = this.currentChunkStartTime + this.fragmentDuration;
             if (Math.abs(chunkStart - expectedNext) < 2.0) {
                 logPlayer("PLAY (Buffer)", "Предзагруженный фрагмент сохранен.", { time: chunkStart });
                 this.nextPlayer.src = url;
@@ -131,31 +144,35 @@ const streamer = {
                 this.nextPlayer._chunkStart = chunkStart;
                 this.nextChunkRequested = false;
 
-                if (this.isLoading && this.currentPlayer.ended) {
+                if (this.isLoading) {
                     logPlayer("PLAY", "Отложенный Swap: Буфер прибыл, запускаем.");
-                    document.getElementById('loading-overlay').style.display = 'none';
-                    this.isLoading = false;
-                    this.swap();
+                    this.swap(); 
                 }
             } else {
                 logPlayer("MISMATCH", "Предзагрузка пришла, но время не стыкуется.", { chunkStart, expectedNext });
-                this.nextChunkRequested = false; // Сбрасываем флаг, чтобы попытаться снова
+                this.nextChunkRequested = false; 
             }
         }
     },
 
-    // Вспомогательная функция: есть ли во втором плеере нужный кусок?
     hasNextChunkBuffered: function () {
-        if (!this.currentPlayer || !this.currentPlayer.duration) return false;
-        const nextStartTime = this.currentChunkStartTime + this.currentPlayer.duration;
-        // Проверяем, что start_time следующего плеера совпадает с концом текущего
+        if (!this.currentPlayer) return false;
+        // СТРОГАЯ МАТЕМАТИКА
+        const nextStartTime = this.currentChunkStartTime + this.fragmentDuration;
         return Math.abs(this.nextPlayer._chunkStart - nextStartTime) < 1.0 && this.nextPlayer.readyState >= 0;
     },
 
     onTimeUpdate: function () {
-        if (!this.isPlaying) return;
+        if (!this.isPlaying || this.isLoading) return; 
+        
         const playerTime = this.currentPlayer.currentTime;
         if (!isFinite(playerTime)) return;
+
+
+        if (playerTime >= this.fragmentDuration && (this.currentChunkStartTime + this.fragmentDuration) < this.totalDuration) {
+            this.swap();
+            return;
+        }
 
         const globalTime = this.currentChunkStartTime + playerTime;
 
@@ -174,50 +191,52 @@ const streamer = {
             if (!isDraggingBox && !isResizingBox) hidePipBox();
         }
 
-        // Preload Logic
-        const duration = this.currentPlayer.duration;
-        if (isFinite(duration) && duration > 0) {
-            const remaining = duration - playerTime;
-            // Запрашиваем, ТОЛЬКО если:
-            // 1. Осталось мало времени (< 5 сек)
-            // 2. Мы еще НЕ отправляли запрос (nextChunkRequested == false)
-            // 3. У нас в буфере (nextPlayer) ЕЩЕ НЕТ готового следующего куска (hasNextChunkBuffered == false)
-            // 4. Мы не в конце всего видео
-            if (remaining < 5 && !this.nextChunkRequested && !this.hasNextChunkBuffered() && (this.currentChunkStartTime + duration) < this.totalDuration - 0.5) {
-                const nextStart = this.currentChunkStartTime + duration;
-                this.nextChunkRequested = true;
+        // Preload Logic (Основанная на строгом шаге)
+        const remaining = this.fragmentDuration - playerTime;
+        if (remaining < 5 && !this.nextChunkRequested && !this.hasNextChunkBuffered() && (this.currentChunkStartTime + this.fragmentDuration) < this.totalDuration - 0.5) {
+            const nextStart = this.currentChunkStartTime + this.fragmentDuration;
+            this.nextChunkRequested = true;
+            this.nextChunkStartTime = nextStart;
 
-                this.nextChunkStartTime = nextStart;
-
-                requestPreviewFragment(nextStart, "Авто-предзагрузка (Next Chunk)", true);
-            }
+            requestPreviewFragment(nextStart, "Авто-предзагрузка (Next Chunk)", true);
         }
     },
+swap: function () {
+        // Проверка абсолютного окончания всего видео
+        if (this.currentChunkStartTime + this.currentPlayer.currentTime >= this.totalDuration - 0.5) {
+            logPlayer("PLAY", "Конец видео.");
+            this.isPlaying = false;
+            document.getElementById('v-play-btn').textContent = '▶';
+            this.currentPlayer.pause();
+            return;
+        }
 
-    swap: function () {
-        const expectedNextTime = this.currentChunkStartTime + this.currentPlayer.duration;
+        const expectedNextTime = this.currentChunkStartTime + this.fragmentDuration;
 
-        // Проверяем, готов ли следующий плеер и ТОТ ли в нем фрагмент
         const isNextReady = this.nextPlayer.readyState >= 2 || (this.nextPlayer.readyState >= 0 && this.nextPlayer.currentSrc);
         const isTimeCorrect = Math.abs(this.nextPlayer._chunkStart - expectedNextTime) < 1.0;
 
         if (isNextReady && isTimeCorrect) {
             logPlayer("PLAY", "Swap: Успешный переход.", { nextStart: this.nextPlayer._chunkStart });
 
+            if (this.isLoading) {
+                document.getElementById('loading-overlay').style.display = 'none';
+                this.isLoading = false;
+            }
+
             this.currentPlayer.style.display = 'none';
             this.nextPlayer.style.display = 'block';
 
-            this.currentChunkStartTime = this.nextPlayer._chunkStart;
+            this.currentChunkStartTime = expectedNextTime; 
+            
             this.nextPlayer.currentTime = 0;
-            this.nextPlayer.play();
+            this.nextPlayer.play().catch(e => console.log(e));
             this.currentPlayer.pause();
 
-            // Меняем местами ссылки
             const temp = this.currentPlayer;
             this.currentPlayer = this.nextPlayer;
             this.nextPlayer = temp;
 
-            // Переназначаем события
             this.currentPlayer.onended = () => this.swap();
             this.currentPlayer.ontimeupdate = () => this.onTimeUpdate();
             this.nextPlayer.onended = null;
@@ -229,22 +248,15 @@ const streamer = {
             this.nextChunkRequested = false;
 
         } else {
-            // Буфера нет или он неправильный
-            if (this.currentChunkStartTime + this.currentPlayer.duration >= this.totalDuration - 1.0) {
-                logPlayer("PLAY", "Конец видео.");
-                this.isPlaying = false;
-                document.getElementById('v-play-btn').textContent = '▶';
+            if (this.nextChunkRequested && Math.abs(this.nextChunkStartTime - expectedNextTime) < 1.0) {
+                logPlayer("PLAY", "Swap: Ждем уже запрошенный буфер (не спамим сервер).", { expected: expectedNextTime });
+                this.isLoading = true;
+                document.getElementById('loading-overlay').style.display = 'flex';
             } else {
-                if (this.nextChunkRequested && Math.abs(this.nextChunkStartTime - expectedNextTime) < 1.0) {
-                    logPlayer("PLAY", "Swap: Ждем уже запрошенный буфер (не спамим сервер).", { expected: expectedNextTime });
-                    this.isLoading = true;
-                    document.getElementById('loading-overlay').style.display = 'flex';
-                } else {
-                    logPlayer("PLAY", "Swap: Буфер потерян. Принудительная загрузка.", { expected: expectedNextTime });
-                    this.isLoading = true;
-                    document.getElementById('loading-overlay').style.display = 'flex';
-                    this.seek(expectedNextTime, "Swap Fail Recovery");
-                }
+                logPlayer("PLAY", "Swap: Буфер потерян. Принудительная загрузка.", { expected: expectedNextTime });
+                this.isLoading = true;
+                document.getElementById('loading-overlay').style.display = 'flex';
+                this.seek(expectedNextTime, "Swap Fail Recovery");
             }
         }
     }
@@ -281,6 +293,7 @@ function handleWSMessage(data) {
     else if (data.action === 'path_resolved') { applySelectedPath(data.full_path); }
     else if (data.action === 'preview_map_ready') {
         streamer.totalDuration = data.total_duration;
+        streamer.fragmentDuration = data.fragment_duration || 10.0; // ДОБАВИТЬ ЭТО
         streamer.clips = data.clips;
         renderTimelineVisual(data.clips, data.total_duration);
         document.querySelector('.virtual-player-container').style.display = 'block';
@@ -490,27 +503,59 @@ function renderTimelineVisual(clips, totalDuration) { const trackContainer = doc
 function setupTimelineInteraction() {
     const timeline = document.getElementById('timeline-visual');
     let isDragging = false;
+    let scrubTimer = null;
+    let lastSentTime = -1; // Щит от одинаковых дублирующихся запросов
 
-    const handleScrub = (e) => {
+    const updateVisuals = (e) => {
         const rect = timeline.getBoundingClientRect();
         const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
         const time = (x / rect.width) * streamer.totalDuration;
-        streamer.seek(time, isDragging ? "Timeline Drag" : "Timeline Click");
+
+        // Визуально ползунок бегает моментально при любом движении
+        if (streamer.totalDuration > 0) {
+            const percent = (time / streamer.totalDuration) * 100;
+            document.getElementById('timeline-cursor').style.left = percent + '%';
+            document.getElementById('v-time').textContent = `${formatTime(time)} / ${formatTime(streamer.totalDuration)}`;
+        }
+        return time;
     };
 
+    const triggerSeek = (time, reason) => {
+        // Если мы уже только что запросили ровно это же время, игнорируем (погрешность 0.1 сек)
+        if (Math.abs(lastSentTime - time) < 0.1) return;
+
+        lastSentTime = time;
+        streamer.seek(time, reason);
+    };
+
+    // 1. НАЖАТИЕ: Ничего не просим у сервера, только обновляем картинку ползунка
     timeline.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return; // Реагируем только на ЛКМ
         isDragging = true;
-        handleScrub(e);
+        updateVisuals(e);
     });
 
+    // 2. ДВИЖЕНИЕ МЫШИ (Перетаскивание ползунка с зажатой кнопкой)
     document.addEventListener('mousemove', (e) => {
-        if (isDragging) handleScrub(e);
+        if (!isDragging) return;
+        const time = updateVisuals(e);
+
+        if (scrubTimer) clearTimeout(scrubTimer);
+        // Дергаем сервер только если пользователь при перетаскивании остановил мышь на 300мс
+        scrubTimer = setTimeout(() => triggerSeek(time, "Timeline Drag"), 300);
     });
 
+    // 3. ОТПУСКАНИЕ (Конец клика или перетаскивания)
     document.addEventListener('mouseup', (e) => {
-        if (isDragging) {
-            isDragging = false;
-        }
+        if (!isDragging) return;
+        isDragging = false;
+        const time = updateVisuals(e);
+
+        // Отменяем таймер движения, чтобы запросы не скрестились
+        if (scrubTimer) clearTimeout(scrubTimer);
+
+        // Гарантированно шлем ровно ОДИН финальный запрос
+        triggerSeek(time, "Timeline Drop");
     });
 }
 function previewJump(segId, field) { const segIdx = segments.findIndex(s => s.id === segId); const targetNameStart = `Seg${segIdx + 1}`; const targetClip = streamer.clips.find(c => c.name.startsWith(targetNameStart)); if (targetClip) { let time = targetClip.global_start; if (field === 'end') { const lastClip = streamer.clips.slice().reverse().find(c => c.name.startsWith(targetNameStart)); if (lastClip) time = lastClip.global_start + lastClip.duration - 5; } streamer.seek(time, "Jump Button"); } }
